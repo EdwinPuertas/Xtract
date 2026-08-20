@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>Xtract — Buscador de Twitter/X</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main>
+    <h1>Xtract</h1>
+    <p class="subtitle">Busca posts o usuarios en X y consulta sus metadatos usando la API oficial.</p>
+
+    <form method="post" action="{{ url_for('search') }}" class="search-form">
+      <div class="field-row">
+        <label>
+          <input type="radio" name="mode" value="tweets" {% if form.get('mode', 'tweets') == 'tweets' %}checked{% endif %}>
+          Buscar posts
+        </label>
+        <label>
+          <input type="radio" name="mode" value="users" {% if form.get('mode') == 'users' %}checked{% endif %}>
+          Buscar usuarios
+        </label>
+      </div>
+
+      <input
+        type="text"
+        name="query"
+        placeholder="Ej: from:nasa OR #IA   (o para usuarios: nasa, spacex)"
+        value="{{ form.get('query', '') }}"
+        required
+      >
+
+      <div class="field-row">
+        <label for="max_results">Máx. resultados (10-100)</label>
+        <input type="number" id="max_results" name="max_results" min="10" max="100" value="{{ form.get('max_results', 10) }}">
+        <button type="submit">Buscar</button>
+      </div>
+    </form>
+
+    {% if error %}
+      <div class="error">{{ error }}</div>
+    {% endif %}
+
+    {% if result %}
+      <section class="results">
+        <div class="results-header">
+          <h2>Resultados ({{ result.count }})</h2>
+          <div class="export-links">
+            Exportar:
+            <a href="{{ url_for('export_json', mode=form.mode, query=form.query, max_results=form.max_results) }}">JSON</a>
+            <a href="{{ url_for('export_ndjson', mode=form.mode, query=form.query, max_results=form.max_results) }}">NDJSON</a>
+          </div>
+        </div>
+
+        {% if result.mode == 'tweets' %}
+          {% if result.kpis and result.kpis.total_posts > 0 %}
+            <div class="kpi-grid">
+              <div class="kpi"><span class="kpi-value">{{ result.kpis.total_posts }}</span><span class="kpi-label">posts</span></div>
+              <div class="kpi"><span class="kpi-value">{{ result.kpis.total_engagement }}</span><span class="kpi-label">interacciones totales</span></div>
+              <div class="kpi"><span class="kpi-value">{{ result.kpis.avg_engagement }}</span><span class="kpi-label">interacciones / post</span></div>
+              <div class="kpi"><span class="kpi-value">{{ result.kpis.total_likes }}</span><span class="kpi-label">❤ likes</span></div>
+              <div class="kpi"><span class="kpi-value">{{ result.kpis.total_retweets }}</span><span class="kpi-label">🔁 retweets</span></div>
+              <div class="kpi"><span class="kpi-value">{{ result.kpis.total_replies }}</span><span class="kpi-label">💬 respuestas</span></div>
+              <div class="kpi"><span class="kpi-value">{{ result.kpis.unique_authors }}</span><span class="kpi-label">autores únicos</span></div>
+              <div class="kpi"><span class="kpi-value">{{ result.kpis.verified_authors }}</span><span class="kpi-label">autores verificados</span></div>
+            </div>
+            {% if result.kpis.top_languages %}
+              <div class="kpi-sub">
+                Idiomas:
+                {% for lang, n in result.kpis.top_languages %}<span class="pill">{{ lang }}: {{ n }}</span>{% endfor %}
+              </div>
+            {% endif %}
+            {% if result.kpis.top_post %}
+              <div class="kpi-sub">
+                Post con más interacción ({{ result.kpis.top_post.engagement }}):
+                <em>"{{ result.kpis.top_post.text[:120] }}{% if result.kpis.top_post.text|length > 120 %}…{% endif %}"</em>
+                {% if result.kpis.top_post.author %}— @{{ result.kpis.top_post.author.username }}{% endif %}
+              </div>
+            {% endif %}
+          {% endif %}
+          {% if result.posts|length == 0 %}
+            <p>No se encontraron posts para esta búsqueda.</p>
+          {% endif %}
+          {% for p in result.posts %}
+            <article class="card">
+              <div class="card-header">
+                {% if p.author %}
+                  <img class="avatar" src="{{ p.author.profile_image_url }}" alt="">
+                  <div>
+                    <strong>{{ p.author.name }}</strong>
+                    <span class="muted">@{{ p.author.username }}</span>
+                    {% if p.author.verified %}<span class="badge">✔ verificado</span>{% endif %}
+                  </div>
+                {% else %}
+                  <span class="muted">Autor desconocido (id: {{ p.id }})</span>
+                {% endif %}
+              </div>
+              <p class="tweet-text">{{ p.text }}</p>
+              <div class="meta">
+                <span>{{ p.created_at }}</span>
+                <span>❤ {{ p.metrics.like_count }}</span>
+                <span>🔁 {{ p.metrics.retweet_count }}</span>
+                <span>💬 {{ p.metrics.reply_count }}</span>
+                <span>🔗 {{ p.metrics.quote_count }}</span>
+                <span>lang: {{ p.lang }}</span>
+              </div>
+              {% if p.author %}
+              <div class="meta muted">
+                seguidores: {{ p.author.metrics.followers_count }} ·
+                siguiendo: {{ p.author.metrics.following_count }} ·
+                posts: {{ p.author.metrics.tweet_count }}
+              </div>
+              {% endif %}
+            </article>
+          {% endfor %}
+        {% else %}
+          {% if result.kpis and result.kpis.total_users > 0 %}
+            <div class="kpi-grid">
+              <div class="kpi"><span class="kpi-value">{{ result.kpis.total_users }}</span><span class="kpi-label">usuarios</span></div>
+              <div class="kpi"><span class="kpi-value">{{ result.kpis.total_followers }}</span><span class="kpi-label">seguidores totales</span></div>
+              <div class="kpi"><span class="kpi-value">{{ result.kpis.avg_followers }}</span><span class="kpi-label">seguidores / usuario</span></div>
+              <div class="kpi"><span class="kpi-value">{{ result.kpis.verified_users }}</span><span class="kpi-label">verificados</span></div>
+              <div class="kpi"><span class="kpi-value">{{ result.kpis.protected_users }}</span><span class="kpi-label">protegidos</span></div>
+            </div>
+            {% if result.kpis.top_user %}
+              <div class="kpi-sub">
+                Más seguidores: <strong>{{ result.kpis.top_user.name }}</strong>
+                (@{{ result.kpis.top_user.username }}) — {{ result.kpis.top_user.followers }}
+              </div>
+            {% endif %}
+          {% endif %}
+          {% if result.errors %}
+            <div class="error">
+              {% for e in result.errors %}<div>{{ e }}</div>{% endfor %}
+            </div>
+          {% endif %}
+          {% if result.users|length == 0 %}
+            <p>No se encontraron usuarios.</p>
+          {% endif %}
+          {% for u in result.users %}
+            <article class="card">
+              <div class="card-header">
+                <img class="avatar" src="{{ u.profile_image_url }}" alt="">
+                <div>
+                  <strong>{{ u.name }}</strong>
+                  <span class="muted">@{{ u.username }}</span>
+                  {% if u.verified %}<span class="badge">✔ verificado</span>{% endif %}
+                  {% if u.protected %}<span class="badge">🔒 protegido</span>{% endif %}
+                </div>
+              </div>
+              <p class="tweet-text">{{ u.description }}</p>
+              <div class="meta">
+                <span>{{ u.location or 'sin ubicación' }}</span>
+                <span>desde {{ u.created_at }}</span>
+              </div>
+              <div class="meta muted">
+                seguidores: {{ u.metrics.followers_count }} ·
+                siguiendo: {{ u.metrics.following_count }} ·
+                posts: {{ u.metrics.tweet_count }} ·
+                listas: {{ u.metrics.listed_count }}
+              </div>
+            </article>
+          {% endfor %}
+        {% endif %}
+
+        <details class="raw-json">
+          <summary>Ver JSON crudo</summary>
+          <pre>{{ result | tojson(indent=2) }}</pre>
+        </details>
+      </section>
+    {% endif %}
+  </main>
+</body>
+</html>
