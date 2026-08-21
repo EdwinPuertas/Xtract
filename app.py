@@ -14,6 +14,15 @@ import xauth
 
 load_dotenv()
 
+try:
+    from nlp.analysis import analyze_posts
+
+    NLP_AVAILABLE = True
+    NLP_IMPORT_ERROR = ""
+except Exception as _nlp_exc:  # spaCy/nltk models missing or failed to load
+    NLP_AVAILABLE = False
+    NLP_IMPORT_ERROR = str(_nlp_exc)
+
 BEARER_TOKEN = os.environ.get("X_BEARER_TOKEN", "")
 
 app = Flask(__name__)
@@ -169,6 +178,44 @@ def compute_user_kpis(users: list[dict]) -> dict:
     }
 
 
+def _build_user_dict(u) -> dict:
+    return {
+        "id": u.id,
+        "username": u.username,
+        "name": u.name,
+        "created_at": _iso(u.created_at),
+        "description": u.description,
+        "location": u.location,
+        "verified": u.verified,
+        "protected": u.protected,
+        "profile_image_url": u.profile_image_url,
+        "metrics": u.public_metrics,
+    }
+
+
+def _build_post_dict(t, users_by_id: dict) -> dict:
+    return {
+        "id": t.id,
+        "text": t.text,
+        "created_at": _iso(t.created_at),
+        "lang": t.lang,
+        "possibly_sensitive": t.possibly_sensitive,
+        "source": t.source,
+        "metrics": t.public_metrics,
+        "author": users_by_id.get(t.author_id),
+        "hashtags": _extract_hashtags(t),
+        "categories": _extract_categories(t),
+    }
+
+
+def _users_by_id_from_includes(response) -> dict:
+    users_by_id = {}
+    if response.includes and "users" in response.includes:
+        for u in response.includes["users"]:
+            users_by_id[u.id] = _build_user_dict(u)
+    return users_by_id
+
+
 def search_tweets(query: str, max_results: int) -> dict:
     client = get_client()
     response = client.search_recent_tweets(
@@ -179,38 +226,8 @@ def search_tweets(query: str, max_results: int) -> dict:
         user_fields=USER_FIELDS,
     )
 
-    users_by_id = {}
-    if response.includes and "users" in response.includes:
-        for u in response.includes["users"]:
-            users_by_id[u.id] = {
-                "id": u.id,
-                "username": u.username,
-                "name": u.name,
-                "created_at": _iso(u.created_at),
-                "description": u.description,
-                "location": u.location,
-                "verified": u.verified,
-                "protected": u.protected,
-                "profile_image_url": u.profile_image_url,
-                "metrics": u.public_metrics,
-            }
-
-    posts = []
-    for t in response.data or []:
-        posts.append(
-            {
-                "id": t.id,
-                "text": t.text,
-                "created_at": _iso(t.created_at),
-                "lang": t.lang,
-                "possibly_sensitive": t.possibly_sensitive,
-                "source": t.source,
-                "metrics": t.public_metrics,
-                "author": users_by_id.get(t.author_id),
-                "hashtags": _extract_hashtags(t),
-                "categories": _extract_categories(t),
-            }
-        )
+    users_by_id = _users_by_id_from_includes(response)
+    posts = [_build_post_dict(t, users_by_id) for t in response.data or []]
 
     return {
         "mode": "tweets",
@@ -220,6 +237,34 @@ def search_tweets(query: str, max_results: int) -> dict:
         "meta": response.meta or {},
         "posts": posts,
         "kpis": compute_tweet_kpis(posts),
+    }
+
+
+def get_user_timeline(user_id: str, max_results: int) -> dict:
+    client = get_client()
+    user_response = client.get_user(id=user_id, user_fields=USER_FIELDS)
+    if not user_response.data:
+        raise RuntimeError("Usuario no encontrado.")
+    profile = _build_user_dict(user_response.data)
+
+    tweets_response = client.get_users_tweets(
+        id=user_id,
+        max_results=max_results,
+        tweet_fields=TWEET_FIELDS,
+        exclude=["retweets", "replies"],
+    )
+    users_by_id = {profile["id"]: profile}
+    posts = [_build_post_dict(t, users_by_id) for t in tweets_response.data or []]
+
+    return {
+        "mode": "tweets",
+        "query": f"from:{profile['username']}",
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "count": len(posts),
+        "meta": tweets_response.meta or {},
+        "posts": posts,
+        "kpis": compute_tweet_kpis(posts),
+        "profile": profile,
     }
 
 
@@ -328,13 +373,33 @@ def index():
     return render_template("index.html", result=None, error=None, form={})
 
 
+@app.route("/timeline/<user_id>", methods=["GET"])
+def timeline(user_id):
+    max_results = min(max(int(request.args.get("max_results", 20)), 5), 100)
+    try:
+        result = get_user_timeline(user_id, max_results)
+    except tweepy.errors.TweepyException as exc:
+        return render_template("timeline.html", result=None, profile=None, error=str(exc))
+    except RuntimeError as exc:
+        return render_template("timeline.html", result=None, profile=None, error=str(exc))
+
+    return render_template("timeline.html", result=result, profile=result["profile"], error=None)
+
+
 @app.route("/search", methods=["POST"])
 def search():
     mode, query, max_results = parse_search_params(request.form)
     group_by = request.form.get("group_by", "none")
     if group_by not in GROUP_BY_OPTIONS:
         group_by = "none"
-    form = {"mode": mode, "query": query, "max_results": max_results, "group_by": group_by}
+    analyze_text = request.form.get("analyze_text") == "on"
+    form = {
+        "mode": mode,
+        "query": query,
+        "max_results": max_results,
+        "group_by": group_by,
+        "analyze_text": analyze_text,
+    }
 
     if not query:
         return render_template("index.html", result=None, error="Escribe una búsqueda.", form=form)
@@ -368,7 +433,17 @@ def search():
     if result.get("mode") == "tweets" and group_by != "none":
         result["grouped"] = group_posts(result["posts"], group_by)
 
-    return render_template("index.html", result=result, error=None, form=form)
+    nlp_error = None
+    if result.get("mode") == "tweets" and analyze_text:
+        if NLP_AVAILABLE:
+            try:
+                result["nlp"] = analyze_posts(result["posts"])
+            except Exception as exc:
+                nlp_error = f"No se pudo completar el análisis de texto: {exc}"
+        else:
+            nlp_error = f"El análisis de texto no está disponible en este despliegue: {NLP_IMPORT_ERROR}"
+
+    return render_template("index.html", result=result, error=nlp_error, form=form)
 
 
 @app.route("/export.json", methods=["GET"])

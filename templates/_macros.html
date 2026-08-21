@@ -1,0 +1,44 @@
+{% macro tweet_card(p, sentiments=None) %}
+  <article class="card">
+    <div class="card-header">
+      {% if p.author %}
+        <a class="author-link" href="{{ url_for('timeline', user_id=p.author.id) }}">
+          <img class="avatar" src="{{ p.author.profile_image_url }}" alt="">
+          <div>
+            <strong>{{ p.author.name }}</strong>
+            <span class="muted">@{{ p.author.username }}</span>
+            {% if p.author.verified %}<span class="badge">✔ verificado</span>{% endif %}
+          </div>
+        </a>
+      {% else %}
+        <span class="muted">Autor desconocido (id: {{ p.id }})</span>
+      {% endif %}
+      {% if sentiments and sentiments.get(p.id) %}
+        {% set s = sentiments.get(p.id) %}
+        <span class="pill sentiment-{{ 'pos' if s.label == 'positivo' else ('neg' if s.label == 'negativo' else 'neu') }}-pill">{{ s.label }}</span>
+      {% endif %}
+    </div>
+    <p class="tweet-text">{{ p.text }}</p>
+    <div class="meta">
+      <span>{{ p.created_at }}</span>
+      <span>❤ {{ p.metrics.like_count }}</span>
+      <span>🔁 {{ p.metrics.retweet_count }}</span>
+      <span>💬 {{ p.metrics.reply_count }}</span>
+      <span>🔗 {{ p.metrics.quote_count }}</span>
+      <span>lang: {{ p.lang }}</span>
+    </div>
+    {% if p.hashtags %}
+      <div class="meta">{% for tag in p.hashtags %}<span class="pill">{{ tag }}</span>{% endfor %}</div>
+    {% endif %}
+    {% if p.categories %}
+      <div class="meta muted">{% for cat in p.categories %}<span class="pill">{{ cat }}</span>{% endfor %}</div>
+    {% endif %}
+    {% if p.author %}
+    <div class="meta muted">
+      seguidores: {{ p.author.metrics.followers_count }} ·
+      siguiendo: {{ p.author.metrics.following_count }} ·
+      posts: {{ p.author.metrics.tweet_count }}
+    </div>
+    {% endif %}
+  </article>
+{% endmacro %}

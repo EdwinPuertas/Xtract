@@ -72,6 +72,12 @@ Callback URI registrado en X).
   (con columnas planas, incluyendo hashtags/categorías) desde los enlaces sobre los resultados.
 - **Conectar cuenta de X**: botón en la parte superior → autoriza en X → vuelves a Xtract
   con tu perfil y un cuadro para publicar tweets.
+- **Timeline de usuario**: haz clic en cualquier autor (en resultados de posts o de usuarios)
+  para ver sus últimos posts, KPIs y exportar esa vista.
+- **Analizar texto** (checkbox en el formulario, solo búsqueda de posts): activa un análisis
+  lingüístico de los resultados con spaCy/nltk — sintagmas nominales (tópicos frecuentes),
+  bigramas/trigramas, y sentimiento por post (positivo/neutral/negativo, basado en un léxico
+  de adjetivos en español/inglés). Aumenta el tiempo de respuesta de la búsqueda.
 
 ## Notas
 

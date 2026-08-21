@@ -1,4 +1,6 @@
 .venv
+.venv_clean
 venv
 __pycache__
 .env
+nltk_data

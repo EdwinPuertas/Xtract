@@ -6,44 +6,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-  {% macro tweet_card(p) %}
-    <article class="card">
-      <div class="card-header">
-        {% if p.author %}
-          <img class="avatar" src="{{ p.author.profile_image_url }}" alt="">
-          <div>
-            <strong>{{ p.author.name }}</strong>
-            <span class="muted">@{{ p.author.username }}</span>
-            {% if p.author.verified %}<span class="badge">✔ verificado</span>{% endif %}
-          </div>
-        {% else %}
-          <span class="muted">Autor desconocido (id: {{ p.id }})</span>
-        {% endif %}
-      </div>
-      <p class="tweet-text">{{ p.text }}</p>
-      <div class="meta">
-        <span>{{ p.created_at }}</span>
-        <span>❤ {{ p.metrics.like_count }}</span>
-        <span>🔁 {{ p.metrics.retweet_count }}</span>
-        <span>💬 {{ p.metrics.reply_count }}</span>
-        <span>🔗 {{ p.metrics.quote_count }}</span>
-        <span>lang: {{ p.lang }}</span>
-      </div>
-      {% if p.hashtags %}
-        <div class="meta">{% for tag in p.hashtags %}<span class="pill">{{ tag }}</span>{% endfor %}</div>
-      {% endif %}
-      {% if p.categories %}
-        <div class="meta muted">{% for cat in p.categories %}<span class="pill">{{ cat }}</span>{% endfor %}</div>
-      {% endif %}
-      {% if p.author %}
-      <div class="meta muted">
-        seguidores: {{ p.author.metrics.followers_count }} ·
-        siguiendo: {{ p.author.metrics.following_count }} ·
-        posts: {{ p.author.metrics.tweet_count }}
-      </div>
-      {% endif %}
-    </article>
-  {% endmacro %}
+  {% import '_macros.html' as macros %}
   <main>
     <div class="results-header">
       <h1>Xtract</h1>
@@ -87,6 +50,12 @@
           <option value="hashtag" {% if form.get('group_by') == 'hashtag' %}selected{% endif %}>Hashtag</option>
           <option value="category" {% if form.get('group_by') == 'category' %}selected{% endif %}>Categoría</option>
         </select>
+      </div>
+      <div class="field-row">
+        <label class="checkbox-field">
+          <input type="checkbox" name="analyze_text" {% if form.get('analyze_text') %}checked{% endif %}>
+          Analizar texto (tópicos, sintagmas, n-grams, sentimientos)
+        </label>
         <button type="submit">Buscar</button>
       </div>
     </form>
@@ -145,15 +114,62 @@
               </div>
             {% endif %}
           {% endif %}
+
+          {% if result.nlp %}
+            {% set nlp = result.nlp %}
+            <div class="nlp-section">
+              <h3>Análisis de texto ({{ nlp.analyzed_count }} posts analizados)</h3>
+
+              {% if nlp.sentiment_summary %}
+                {% set total_sent = (nlp.sentiment_summary.positivo or 0) + (nlp.sentiment_summary.neutral or 0) + (nlp.sentiment_summary.negativo or 0) %}
+                <strong class="muted">Sentimientos</strong>
+                <div class="sentiment-bar">
+                  {% if total_sent > 0 %}
+                    <span class="sentiment-pos" style="width: {{ ((nlp.sentiment_summary.positivo or 0) / total_sent * 100) | round(1) }}%"></span>
+                    <span class="sentiment-neu" style="width: {{ ((nlp.sentiment_summary.neutral or 0) / total_sent * 100) | round(1) }}%"></span>
+                    <span class="sentiment-neg" style="width: {{ ((nlp.sentiment_summary.negativo or 0) / total_sent * 100) | round(1) }}%"></span>
+                  {% endif %}
+                </div>
+                <div class="sentiment-legend">
+                  <span class="l-pos">Positivo: {{ nlp.sentiment_summary.positivo or 0 }}</span>
+                  <span class="l-neu">Neutral: {{ nlp.sentiment_summary.neutral or 0 }}</span>
+                  <span class="l-neg">Negativo: {{ nlp.sentiment_summary.negativo or 0 }}</span>
+                </div>
+              {% endif %}
+
+              {% if nlp.top_noun_phrases %}
+                <strong class="muted">Sintagmas nominales (tópicos frecuentes)</strong>
+                <div class="kpi-sub">
+                  {% for phrase, n in nlp.top_noun_phrases %}<span class="pill">{{ phrase }}: {{ n }}</span>{% endfor %}
+                </div>
+              {% endif %}
+
+              {% if nlp.top_bigrams %}
+                <strong class="muted">Bigramas más frecuentes</strong>
+                <div class="kpi-sub">
+                  {% for gram, n in nlp.top_bigrams %}<span class="pill">{{ gram }}: {{ n }}</span>{% endfor %}
+                </div>
+              {% endif %}
+
+              {% if nlp.top_trigrams %}
+                <strong class="muted">Trigramas más frecuentes</strong>
+                <div class="kpi-sub">
+                  {% for gram, n in nlp.top_trigrams %}<span class="pill">{{ gram }}: {{ n }}</span>{% endfor %}
+                </div>
+              {% endif %}
+            </div>
+          {% endif %}
+
+          {% set sentiments = result.nlp.sentiments if result.nlp else None %}
           {% if result.posts|length == 0 %}
             <p>No se encontraron posts para esta búsqueda.</p>
           {% elif result.grouped %}
             {% for group in result.grouped %}
               <h3 class="group-header">{{ group.key }} <span class="muted">({{ group.count }})</span></h3>
-              {% for p in group.posts %}{{ tweet_card(p) }}{% endfor %}
+              {% for p in group.posts %}{{ macros.tweet_card(p, sentiments) }}{% endfor %}
             {% endfor %}
           {% else %}
-            {% for p in result.posts %}{{ tweet_card(p) }}{% endfor %}
+            {% for p in result.posts %}{{ macros.tweet_card(p, sentiments) }}{% endfor %}
           {% endif %}
         {% else %}
           {% if result.kpis and result.kpis.total_users > 0 %}
@@ -182,13 +198,15 @@
           {% for u in result.users %}
             <article class="card">
               <div class="card-header">
-                <img class="avatar" src="{{ u.profile_image_url }}" alt="">
-                <div>
-                  <strong>{{ u.name }}</strong>
-                  <span class="muted">@{{ u.username }}</span>
-                  {% if u.verified %}<span class="badge">✔ verificado</span>{% endif %}
-                  {% if u.protected %}<span class="badge">🔒 protegido</span>{% endif %}
-                </div>
+                <a class="author-link" href="{{ url_for('timeline', user_id=u.id) }}">
+                  <img class="avatar" src="{{ u.profile_image_url }}" alt="">
+                  <div>
+                    <strong>{{ u.name }}</strong>
+                    <span class="muted">@{{ u.username }}</span>
+                    {% if u.verified %}<span class="badge">✔ verificado</span>{% endif %}
+                    {% if u.protected %}<span class="badge">🔒 protegido</span>{% endif %}
+                  </div>
+                </a>
               </div>
               <p class="tweet-text">{{ u.description }}</p>
               <div class="meta">

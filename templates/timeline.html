@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>Xtract — {% if profile %}@{{ profile.username }}{% else %}Timeline{% endif %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  {% import '_macros.html' as macros %}
+  <main>
+    <div class="results-header">
+      <h1>Xtract</h1>
+      <nav class="nav-links">
+        <a href="{{ url_for('index') }}">← Buscar</a>
+        {% if connected %}
+          <a href="{{ url_for('account') }}">Mi cuenta</a>
+          <a href="{{ url_for('logout') }}">Cerrar sesión</a>
+        {% else %}
+          <a href="{{ url_for('login') }}">Conectar cuenta de X</a>
+        {% endif %}
+      </nav>
+    </div>
+
+    {% if error %}
+      <div class="error">{{ error }}</div>
+    {% endif %}
+
+    {% if profile %}
+      <div class="profile-header">
+        <img class="avatar-lg" src="{{ profile.profile_image_url }}" alt="">
+        <div>
+          <strong style="font-size:1.2rem;">{{ profile.name }}</strong>
+          <span class="muted">@{{ profile.username }}</span>
+          {% if profile.verified %}<span class="badge">✔ verificado</span>{% endif %}
+          {% if profile.protected %}<span class="badge">🔒 protegido</span>{% endif %}
+          {% if profile.description %}<p class="tweet-text">{{ profile.description }}</p>{% endif %}
+          <div class="meta muted">
+            seguidores: {{ profile.metrics.followers_count }} ·
+            siguiendo: {{ profile.metrics.following_count }} ·
+            posts: {{ profile.metrics.tweet_count }}
+          </div>
+        </div>
+      </div>
+    {% endif %}
+
+    {% if result %}
+      <section class="results">
+        <div class="results-header">
+          <h2>Últimos posts ({{ result.count }})</h2>
+          <div class="export-links">
+            Exportar:
+            <a href="{{ url_for('export_json', mode='tweets', query=result.query, max_results=result.count if result.count >= 10 else 10) }}">JSON</a>
+            <a href="{{ url_for('export_csv', mode='tweets', query=result.query, max_results=result.count if result.count >= 10 else 10) }}">CSV</a>
+          </div>
+        </div>
+
+        {% if result.kpis and result.kpis.total_posts > 0 %}
+          <div class="kpi-grid">
+            <div class="kpi"><span class="kpi-value">{{ result.kpis.total_posts }}</span><span class="kpi-label">posts</span></div>
+            <div class="kpi"><span class="kpi-value">{{ result.kpis.total_engagement }}</span><span class="kpi-label">interacciones</span></div>
+            <div class="kpi"><span class="kpi-value">{{ result.kpis.avg_engagement }}</span><span class="kpi-label">interacciones / post</span></div>
+            <div class="kpi"><span class="kpi-value">{{ result.kpis.total_likes }}</span><span class="kpi-label">❤ likes</span></div>
+            <div class="kpi"><span class="kpi-value">{{ result.kpis.total_retweets }}</span><span class="kpi-label">🔁 retweets</span></div>
+          </div>
+          {% if result.kpis.top_hashtags %}
+            <div class="kpi-sub">
+              Hashtags:
+              {% for tag, n in result.kpis.top_hashtags %}<span class="pill">{{ tag }}: {{ n }}</span>{% endfor %}
+            </div>
+          {% endif %}
+        {% endif %}
+
+        {% if result.posts|length == 0 %}
+          <p>Este usuario no tiene posts recientes visibles.</p>
+        {% endif %}
+        {% for p in result.posts %}{{ macros.tweet_card(p) }}{% endfor %}
+      </section>
+    {% endif %}
+  </main>
+</body>
+</html>

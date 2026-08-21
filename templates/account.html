@@ -50,7 +50,7 @@
 
     {% if can_post %}
       <form method="post" action="{{ url_for('post_tweet') }}" class="search-form" style="margin-top:1rem;">
-        <textarea name="text" rows="3" maxlength="280" placeholder="¿Qué está pasando?" style="width:100%; font-size:1rem; padding:0.6rem 0.75rem; border-radius:8px; border:1px solid var(--border); background:var(--bg); color:var(--fg); resize:vertical;"></textarea>
+        <textarea name="text" rows="3" maxlength="280" placeholder="¿Qué está pasando?" style="width:100%; resize:vertical;"></textarea>
         <div class="field-row">
           <button type="submit">Publicar</button>
         </div>
