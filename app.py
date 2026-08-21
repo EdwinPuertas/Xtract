@@ -1,16 +1,23 @@
+import csv
+import io
 import json
 import os
+import time
 from datetime import datetime, timezone
 
+import requests
 import tweepy
 from dotenv import load_dotenv
-from flask import Flask, Response, render_template, request
+from flask import Flask, Response, redirect, render_template, request, session, url_for
+
+import xauth
 
 load_dotenv()
 
 BEARER_TOKEN = os.environ.get("X_BEARER_TOKEN", "")
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "")
 
 TWEET_FIELDS = [
     "id",
@@ -21,6 +28,8 @@ TWEET_FIELDS = [
     "possibly_sensitive",
     "source",
     "author_id",
+    "entities",
+    "context_annotations",
 ]
 USER_FIELDS = [
     "id",
@@ -51,6 +60,16 @@ def _iso(value):
     return value
 
 
+def _extract_hashtags(tweet) -> list[str]:
+    entities = tweet.entities or {}
+    return sorted({f"#{h['tag']}" for h in entities.get("hashtags", []) if h.get("tag")})
+
+
+def _extract_categories(tweet) -> list[str]:
+    annotations = tweet.context_annotations or []
+    return sorted({a["entity"]["name"] for a in annotations if a.get("entity", {}).get("name")})
+
+
 def compute_tweet_kpis(posts: list[dict]) -> dict:
     if not posts:
         return {
@@ -64,6 +83,8 @@ def compute_tweet_kpis(posts: list[dict]) -> dict:
             "unique_authors": 0,
             "verified_authors": 0,
             "top_languages": [],
+            "top_hashtags": [],
+            "top_categories": [],
             "top_post": None,
         }
 
@@ -77,10 +98,18 @@ def compute_tweet_kpis(posts: list[dict]) -> dict:
     verified_authors = {p["author"]["id"] for p in posts if p.get("author") and p["author"].get("verified")}
 
     lang_counts: dict[str, int] = {}
+    hashtag_counts: dict[str, int] = {}
+    category_counts: dict[str, int] = {}
     for p in posts:
         lang = p.get("lang") or "und"
         lang_counts[lang] = lang_counts.get(lang, 0) + 1
+        for tag in p.get("hashtags", []):
+            hashtag_counts[tag] = hashtag_counts.get(tag, 0) + 1
+        for cat in p.get("categories", []):
+            category_counts[cat] = category_counts.get(cat, 0) + 1
     top_languages = sorted(lang_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
+    top_hashtags = sorted(hashtag_counts.items(), key=lambda kv: kv[1], reverse=True)[:10]
+    top_categories = sorted(category_counts.items(), key=lambda kv: kv[1], reverse=True)[:10]
 
     def engagement(p: dict) -> int:
         m = p["metrics"]
@@ -99,6 +128,8 @@ def compute_tweet_kpis(posts: list[dict]) -> dict:
         "unique_authors": len(author_ids),
         "verified_authors": len(verified_authors),
         "top_languages": top_languages,
+        "top_hashtags": top_hashtags,
+        "top_categories": top_categories,
         "top_post": {
             "id": top_post["id"],
             "text": top_post["text"],
@@ -176,6 +207,8 @@ def search_tweets(query: str, max_results: int) -> dict:
                 "source": t.source,
                 "metrics": t.public_metrics,
                 "author": users_by_id.get(t.author_id),
+                "hashtags": _extract_hashtags(t),
+                "categories": _extract_categories(t),
             }
         )
 
@@ -235,6 +268,9 @@ def search_users(query: str, max_results: int) -> dict:
     }
 
 
+GROUP_BY_OPTIONS = {"none", "hashtag", "category"}
+
+
 def parse_search_params(args) -> tuple[str, str, int]:
     mode = args.get("mode", "tweets")
     query = args.get("query", "").strip()
@@ -252,6 +288,41 @@ def run_search(mode: str, query: str, max_results: int) -> dict:
     return search_tweets(query, max_results)
 
 
+def group_posts(posts: list[dict], group_by: str) -> list[dict]:
+    field = "hashtags" if group_by == "hashtag" else "categories"
+    fallback = "Sin hashtag" if group_by == "hashtag" else "Sin categoría"
+
+    groups: dict[str, list[dict]] = {}
+    for p in posts:
+        keys = p.get(field) or [fallback]
+        for key in keys:
+            groups.setdefault(key, []).append(p)
+
+    ordered = sorted(groups.items(), key=lambda kv: len(kv[1]), reverse=True)
+    return [{"key": key, "posts": items, "count": len(items)} for key, items in ordered]
+
+
+@app.context_processor
+def inject_connected():
+    return {"connected": bool(session.get("access_token"))}
+
+
+def get_user_access_token() -> str:
+    token = session.get("access_token")
+    if not token:
+        raise RuntimeError("No has conectado tu cuenta de X todavía.")
+
+    expires_at = session.get("token_expires_at", 0)
+    refresh = session.get("refresh_token")
+    if time.time() > expires_at - 30 and refresh:
+        data = xauth.refresh_access_token(refresh)
+        session["access_token"] = data["access_token"]
+        session["refresh_token"] = data.get("refresh_token", refresh)
+        session["token_expires_at"] = time.time() + data.get("expires_in", 7200)
+        token = session["access_token"]
+    return token
+
+
 @app.route("/", methods=["GET"])
 def index():
     return render_template("index.html", result=None, error=None, form={})
@@ -260,7 +331,10 @@ def index():
 @app.route("/search", methods=["POST"])
 def search():
     mode, query, max_results = parse_search_params(request.form)
-    form = {"mode": mode, "query": query, "max_results": max_results}
+    group_by = request.form.get("group_by", "none")
+    if group_by not in GROUP_BY_OPTIONS:
+        group_by = "none"
+    form = {"mode": mode, "query": query, "max_results": max_results, "group_by": group_by}
 
     if not query:
         return render_template("index.html", result=None, error="Escribe una búsqueda.", form=form)
@@ -290,6 +364,9 @@ def search():
         )
     except RuntimeError as exc:
         return render_template("index.html", result=None, error=str(exc), form=form)
+
+    if result.get("mode") == "tweets" and group_by != "none":
+        result["grouped"] = group_posts(result["posts"], group_by)
 
     return render_template("index.html", result=result, error=None, form=form)
 
@@ -323,6 +400,187 @@ def export_ndjson():
         mimetype="application/x-ndjson",
         headers={"Content-Disposition": "attachment; filename=twitter-search.ndjson"},
     )
+
+
+TWEET_CSV_COLUMNS = [
+    "id", "text", "created_at", "lang", "like_count", "retweet_count",
+    "reply_count", "quote_count", "author_username", "author_name",
+    "author_followers", "hashtags", "categories",
+]
+USER_CSV_COLUMNS = [
+    "id", "username", "name", "followers_count", "following_count",
+    "tweet_count", "listed_count", "verified", "protected", "location",
+    "created_at", "description",
+]
+
+
+def _tweet_to_csv_row(p: dict) -> list:
+    m = p.get("metrics") or {}
+    author = p.get("author") or {}
+    return [
+        p.get("id"), p.get("text"), p.get("created_at"), p.get("lang"),
+        m.get("like_count"), m.get("retweet_count"), m.get("reply_count"), m.get("quote_count"),
+        author.get("username"), author.get("name"), (author.get("metrics") or {}).get("followers_count"),
+        " ".join(p.get("hashtags") or []), "; ".join(p.get("categories") or []),
+    ]
+
+
+def _user_to_csv_row(u: dict) -> list:
+    m = u.get("metrics") or {}
+    return [
+        u.get("id"), u.get("username"), u.get("name"), m.get("followers_count"),
+        m.get("following_count"), m.get("tweet_count"), m.get("listed_count"),
+        u.get("verified"), u.get("protected"), u.get("location"), u.get("created_at"),
+        u.get("description"),
+    ]
+
+
+@app.route("/export.csv", methods=["GET"])
+def export_csv():
+    mode, query, max_results = parse_search_params(request.args)
+    if not query:
+        return Response("Falta el parámetro 'query'.", status=400)
+    result = run_search(mode, query, max_results)
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    if result.get("mode") == "tweets":
+        writer.writerow(TWEET_CSV_COLUMNS)
+        for p in result.get("posts") or []:
+            writer.writerow(_tweet_to_csv_row(p))
+    else:
+        writer.writerow(USER_CSV_COLUMNS)
+        for u in result.get("users") or []:
+            writer.writerow(_user_to_csv_row(u))
+
+    return Response(
+        "﻿" + buffer.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment; filename=twitter-search.csv"},
+    )
+
+
+@app.route("/login", methods=["GET"])
+def login():
+    if not app.secret_key:
+        return render_template(
+            "index.html",
+            result=None,
+            error="Falta FLASK_SECRET_KEY en las variables de entorno.",
+            form={}
+        )
+
+    state = xauth.new_state()
+    verifier, challenge = xauth.new_pkce_pair()
+    session["oauth_state"] = state
+    session["oauth_verifier"] = verifier
+
+    try:
+        auth_url = xauth.build_authorize_url(state, challenge)
+    except RuntimeError as exc:
+        return render_template("index.html", result=None, error=str(exc), form={})
+
+    return redirect(auth_url)
+
+
+@app.route("/callback", methods=["GET"])
+def callback():
+    oauth_error = request.args.get("error")
+    if oauth_error:
+        return render_template(
+            "index.html",
+            result=None,
+            error=f"X rechazó la autorización: {oauth_error}",
+            form={}
+        )
+
+    state = request.args.get("state")
+    code = request.args.get("code")
+    expected_state = session.pop("oauth_state", None)
+    verifier = session.pop("oauth_verifier", None)
+
+    if not state or state != expected_state:
+        return render_template(
+            "index.html",
+            result=None,
+            error="Estado OAuth inválido o expirado. Intenta conectar tu cuenta de nuevo.",
+            form={}
+        )
+
+    if not code or not verifier:
+        return render_template(
+            "index.html", result=None, error="Falta el código de autorización.", form={}
+        )
+
+    try:
+        token_data = xauth.exchange_code(code, verifier)
+    except requests.HTTPError as exc:
+        detail = exc.response.text if exc.response is not None else str(exc)
+        return render_template(
+            "index.html",
+            result=None,
+            error=f"No se pudo obtener el token de acceso: {detail}",
+            form={}
+        )
+
+    session["access_token"] = token_data["access_token"]
+    session["refresh_token"] = token_data.get("refresh_token")
+    session["token_expires_at"] = time.time() + token_data.get("expires_in", 7200)
+    return redirect(url_for("account"))
+
+
+@app.route("/logout", methods=["GET"])
+def logout():
+    session.clear()
+    return redirect(url_for("index"))
+
+
+def get_authenticated_client() -> tweepy.Client:
+    token = get_user_access_token()
+    return tweepy.Client(bearer_token=token)
+
+
+def fetch_me(client: tweepy.Client):
+    try:
+        return client.get_me(user_fields=USER_FIELDS, user_auth=False).data, None
+    except tweepy.errors.TweepyException as exc:
+        return None, str(exc)
+
+
+@app.route("/account", methods=["GET"])
+def account():
+    try:
+        client = get_authenticated_client()
+    except RuntimeError:
+        return redirect(url_for("login"))
+
+    me, profile_error = fetch_me(client)
+    return render_template("account.html", user=me, error=profile_error, posted=None, can_post=True)
+
+
+@app.route("/post", methods=["POST"])
+def post_tweet():
+    text = request.form.get("text", "").strip()
+
+    try:
+        client = get_authenticated_client()
+    except RuntimeError:
+        return redirect(url_for("login"))
+
+    me, profile_error = fetch_me(client)
+
+    if not text:
+        return render_template(
+            "account.html", user=me, error="Escribe algo para publicar.", posted=None, can_post=True
+        )
+
+    try:
+        response = client.create_tweet(text=text, user_auth=False)
+        return render_template("account.html", user=me, error=None, posted=response.data, can_post=True)
+    except tweepy.errors.TweepyException as exc:
+        return render_template(
+            "account.html", user=me, error=f"No se pudo publicar: {exc}", posted=None, can_post=True
+        )
 
 
 if __name__ == "__main__":

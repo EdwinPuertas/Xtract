@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>Xtract — Mi cuenta</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main>
+    <div class="results-header">
+      <h1>Xtract</h1>
+      <nav class="nav-links">
+        <a href="{{ url_for('index') }}">Buscar</a>
+        <a href="{{ url_for('logout') }}">Cerrar sesión</a>
+      </nav>
+    </div>
+
+    {% if error %}
+      <div class="error">{{ error }}</div>
+    {% endif %}
+
+    {% if user %}
+      <article class="card">
+        <div class="card-header">
+          <img class="avatar" src="{{ user.profile_image_url }}" alt="">
+          <div>
+            <strong>{{ user.name }}</strong>
+            <span class="muted">@{{ user.username }}</span>
+            {% if user.verified %}<span class="badge">✔ verificado</span>{% endif %}
+          </div>
+        </div>
+        {% if user.description %}<p class="tweet-text">{{ user.description }}</p>{% endif %}
+        <div class="meta muted">
+          seguidores: {{ user.public_metrics.followers_count }} ·
+          siguiendo: {{ user.public_metrics.following_count }} ·
+          posts: {{ user.public_metrics.tweet_count }}
+        </div>
+      </article>
+    {% elif can_post %}
+      <p class="muted">No se pudo cargar tu perfil (puede ser el mismo límite de créditos de
+        lectura), pero puedes intentar publicar de todas formas — publicar es una categoría
+        de costo distinta a leer.</p>
+    {% endif %}
+
+    {% if posted %}
+      <div class="kpi-sub" style="margin-top:0.5rem;">
+        ✅ Publicado {% if user %}— <a href="https://x.com/{{ user.username }}/status/{{ posted.id }}" target="_blank" rel="noopener">ver en X</a>{% else %}(id: {{ posted.id }}){% endif %}
+      </div>
+    {% endif %}
+
+    {% if can_post %}
+      <form method="post" action="{{ url_for('post_tweet') }}" class="search-form" style="margin-top:1rem;">
+        <textarea name="text" rows="3" maxlength="280" placeholder="¿Qué está pasando?" style="width:100%; font-size:1rem; padding:0.6rem 0.75rem; border-radius:8px; border:1px solid var(--border); background:var(--bg); color:var(--fg); resize:vertical;"></textarea>
+        <div class="field-row">
+          <button type="submit">Publicar</button>
+        </div>
+      </form>
+    {% endif %}
+  </main>
+</body>
+</html>

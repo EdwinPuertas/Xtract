@@ -6,8 +6,56 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
+  {% macro tweet_card(p) %}
+    <article class="card">
+      <div class="card-header">
+        {% if p.author %}
+          <img class="avatar" src="{{ p.author.profile_image_url }}" alt="">
+          <div>
+            <strong>{{ p.author.name }}</strong>
+            <span class="muted">@{{ p.author.username }}</span>
+            {% if p.author.verified %}<span class="badge">✔ verificado</span>{% endif %}
+          </div>
+        {% else %}
+          <span class="muted">Autor desconocido (id: {{ p.id }})</span>
+        {% endif %}
+      </div>
+      <p class="tweet-text">{{ p.text }}</p>
+      <div class="meta">
+        <span>{{ p.created_at }}</span>
+        <span>❤ {{ p.metrics.like_count }}</span>
+        <span>🔁 {{ p.metrics.retweet_count }}</span>
+        <span>💬 {{ p.metrics.reply_count }}</span>
+        <span>🔗 {{ p.metrics.quote_count }}</span>
+        <span>lang: {{ p.lang }}</span>
+      </div>
+      {% if p.hashtags %}
+        <div class="meta">{% for tag in p.hashtags %}<span class="pill">{{ tag }}</span>{% endfor %}</div>
+      {% endif %}
+      {% if p.categories %}
+        <div class="meta muted">{% for cat in p.categories %}<span class="pill">{{ cat }}</span>{% endfor %}</div>
+      {% endif %}
+      {% if p.author %}
+      <div class="meta muted">
+        seguidores: {{ p.author.metrics.followers_count }} ·
+        siguiendo: {{ p.author.metrics.following_count }} ·
+        posts: {{ p.author.metrics.tweet_count }}
+      </div>
+      {% endif %}
+    </article>
+  {% endmacro %}
   <main>
-    <h1>Xtract</h1>
+    <div class="results-header">
+      <h1>Xtract</h1>
+      <nav class="nav-links">
+        {% if connected %}
+          <a href="{{ url_for('account') }}">Mi cuenta</a>
+          <a href="{{ url_for('logout') }}">Cerrar sesión</a>
+        {% else %}
+          <a href="{{ url_for('login') }}">Conectar cuenta de X</a>
+        {% endif %}
+      </nav>
+    </div>
     <p class="subtitle">Busca posts o usuarios en X y consulta sus metadatos usando la API oficial.</p>
 
     <form method="post" action="{{ url_for('search') }}" class="search-form">
@@ -33,6 +81,12 @@
       <div class="field-row">
         <label for="max_results">Máx. resultados (10-100)</label>
         <input type="number" id="max_results" name="max_results" min="10" max="100" value="{{ form.get('max_results', 10) }}">
+        <label for="group_by">Agrupar por</label>
+        <select id="group_by" name="group_by">
+          <option value="none" {% if form.get('group_by', 'none') == 'none' %}selected{% endif %}>Sin agrupar</option>
+          <option value="hashtag" {% if form.get('group_by') == 'hashtag' %}selected{% endif %}>Hashtag</option>
+          <option value="category" {% if form.get('group_by') == 'category' %}selected{% endif %}>Categoría</option>
+        </select>
         <button type="submit">Buscar</button>
       </div>
     </form>
@@ -49,6 +103,7 @@
             Exportar:
             <a href="{{ url_for('export_json', mode=form.mode, query=form.query, max_results=form.max_results) }}">JSON</a>
             <a href="{{ url_for('export_ndjson', mode=form.mode, query=form.query, max_results=form.max_results) }}">NDJSON</a>
+            <a href="{{ url_for('export_csv', mode=form.mode, query=form.query, max_results=form.max_results) }}">CSV</a>
           </div>
         </div>
 
@@ -70,6 +125,18 @@
                 {% for lang, n in result.kpis.top_languages %}<span class="pill">{{ lang }}: {{ n }}</span>{% endfor %}
               </div>
             {% endif %}
+            {% if result.kpis.top_hashtags %}
+              <div class="kpi-sub">
+                Hashtags:
+                {% for tag, n in result.kpis.top_hashtags %}<span class="pill">{{ tag }}: {{ n }}</span>{% endfor %}
+              </div>
+            {% endif %}
+            {% if result.kpis.top_categories %}
+              <div class="kpi-sub">
+                Categorías:
+                {% for cat, n in result.kpis.top_categories %}<span class="pill">{{ cat }}: {{ n }}</span>{% endfor %}
+              </div>
+            {% endif %}
             {% if result.kpis.top_post %}
               <div class="kpi-sub">
                 Post con más interacción ({{ result.kpis.top_post.engagement }}):
@@ -80,39 +147,14 @@
           {% endif %}
           {% if result.posts|length == 0 %}
             <p>No se encontraron posts para esta búsqueda.</p>
+          {% elif result.grouped %}
+            {% for group in result.grouped %}
+              <h3 class="group-header">{{ group.key }} <span class="muted">({{ group.count }})</span></h3>
+              {% for p in group.posts %}{{ tweet_card(p) }}{% endfor %}
+            {% endfor %}
+          {% else %}
+            {% for p in result.posts %}{{ tweet_card(p) }}{% endfor %}
           {% endif %}
-          {% for p in result.posts %}
-            <article class="card">
-              <div class="card-header">
-                {% if p.author %}
-                  <img class="avatar" src="{{ p.author.profile_image_url }}" alt="">
-                  <div>
-                    <strong>{{ p.author.name }}</strong>
-                    <span class="muted">@{{ p.author.username }}</span>
-                    {% if p.author.verified %}<span class="badge">✔ verificado</span>{% endif %}
-                  </div>
-                {% else %}
-                  <span class="muted">Autor desconocido (id: {{ p.id }})</span>
-                {% endif %}
-              </div>
-              <p class="tweet-text">{{ p.text }}</p>
-              <div class="meta">
-                <span>{{ p.created_at }}</span>
-                <span>❤ {{ p.metrics.like_count }}</span>
-                <span>🔁 {{ p.metrics.retweet_count }}</span>
-                <span>💬 {{ p.metrics.reply_count }}</span>
-                <span>🔗 {{ p.metrics.quote_count }}</span>
-                <span>lang: {{ p.lang }}</span>
-              </div>
-              {% if p.author %}
-              <div class="meta muted">
-                seguidores: {{ p.author.metrics.followers_count }} ·
-                siguiendo: {{ p.author.metrics.following_count }} ·
-                posts: {{ p.author.metrics.tweet_count }}
-              </div>
-              {% endif %}
-            </article>
-          {% endfor %}
         {% else %}
           {% if result.kpis and result.kpis.total_users > 0 %}
             <div class="kpi-grid">
