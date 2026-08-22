@@ -210,4 +210,5 @@ servidor. Ten en cuenta tu cuota mensual de la API si exportas seguido.
 
 - Correo: [epuerta@utb.edu.co](mailto:epuerta@utb.edu.co)
 - GitHub: [github.com/EdwinPuertas](https://github.com/EdwinPuertas)
+- LinkedIn: [linkedin.com/in/edwinpuertas](https://www.linkedin.com/in/edwinpuertas/)
 - Sitio web: [edwinpuertas.github.io](https://edwinpuertas.github.io/)
