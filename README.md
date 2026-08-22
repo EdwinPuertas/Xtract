@@ -203,3 +203,11 @@ como función serverless e incluye `templates/` y `static/`).
 Importante: cada invocación es una función serverless independiente y sin estado —
 por eso las exportaciones re-consultan la API de X en vez de usar un caché en memoria del
 servidor. Ten en cuenta tu cuota mensual de la API si exportas seguido.
+
+## Autor
+
+**Edwin Puertas**
+
+- Correo: [epuerta@utb.edu.co](mailto:epuerta@utb.edu.co)
+- GitHub: [github.com/EdwinPuertas](https://github.com/EdwinPuertas)
+- Sitio web: [edwinpuertas.github.io](https://edwinpuertas.github.io/)
