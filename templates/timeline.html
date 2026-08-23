@@ -49,8 +49,8 @@
           <h2>Últimos posts ({{ result.count }})</h2>
           <div class="export-links">
             Exportar:
-            <a href="{{ url_for('export_json', mode='tweets', query=result.query, max_results=result.count if result.count >= 10 else 10) }}">JSON</a>
-            <a href="{{ url_for('export_csv', mode='tweets', query=result.query, max_results=result.count if result.count >= 10 else 10) }}">CSV</a>
+            <a href="{{ url_for('export_json', mode='tweets', query=result.query, max_results=result.count if result.count >= 10 else 10, lang='', country='') }}">JSON</a>
+            <a href="{{ url_for('export_csv', mode='tweets', query=result.query, max_results=result.count if result.count >= 10 else 10, lang='', country='') }}">CSV</a>
           </div>
         </div>
 

@@ -5,6 +5,8 @@ import nltk
 
 from .lexical_features import lexical_en, lexical_es
 from .text_processing import TextProcessing
+from .vad_emotion import compute_vad
+from .vad_lexicon import is_lexicon_available
 
 _NLTK_DIR = os.environ.get("NLTK_DATA", "/tmp/nltk_data")
 os.makedirs(_NLTK_DIR, exist_ok=True)
@@ -64,6 +66,8 @@ def analyze_posts(posts: list[dict], max_posts: int = 60) -> dict:
     noun_phrases = Counter()
     sentiments = []
     sentiment_counts = Counter()
+    vad_results = {}
+    emotion_counts = Counter()
 
     for p in posts:
         text = p.get("text") or ""
@@ -81,6 +85,11 @@ def analyze_posts(posts: list[dict], max_posts: int = 60) -> dict:
         sentiments.append({"id": p.get("id"), **sentiment})
         sentiment_counts[sentiment["label"]] += 1
 
+        vad = compute_vad(text, lang)
+        vad_results[p.get("id")] = vad
+        if vad["emotion"] != "sin_datos":
+            emotion_counts[vad["emotion"]] += 1
+
     return {
         "analyzed_count": len(posts),
         "top_bigrams": bigrams.most_common(15),
@@ -88,4 +97,9 @@ def analyze_posts(posts: list[dict], max_posts: int = 60) -> dict:
         "top_noun_phrases": noun_phrases.most_common(15),
         "sentiments": {s["id"]: s for s in sentiments},
         "sentiment_summary": dict(sentiment_counts),
+        "vad": vad_results,
+        "vad_summary": {
+            "emotion_counts": dict(emotion_counts),
+            "lexicon_source": "nrc_vad_v2" if is_lexicon_available() else "fallback_lexico_propio",
+        },
     }

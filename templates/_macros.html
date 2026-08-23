@@ -1,4 +1,4 @@
-{% macro tweet_card(p, sentiments=None) %}
+{% macro tweet_card(p, sentiments=None, vad=None) %}
   <article class="card">
     <div class="card-header">
       {% if p.author %}
@@ -17,6 +17,9 @@
         {% set s = sentiments.get(p.id) %}
         <span class="pill sentiment-{{ 'pos' if s.label == 'positivo' else ('neg' if s.label == 'negativo' else 'neu') }}-pill">{{ s.label }}</span>
       {% endif %}
+      {% if vad and vad.get(p.id) and vad.get(p.id).emotion != 'sin_datos' %}
+        <span class="pill" title="modelo VAD">{{ vad.get(p.id).emotion }}</span>
+      {% endif %}
     </div>
     <p class="tweet-text">{{ p.text }}</p>
     <div class="meta">
@@ -26,6 +29,7 @@
       <span>💬 {{ p.metrics.reply_count }}</span>
       <span>🔗 {{ p.metrics.quote_count }}</span>
       <span>lang: {{ p.lang }}</span>
+      {% if p.country %}<span title="{{ p.country.source }}">🌎 {{ p.country.name }}</span>{% endif %}
     </div>
     {% if p.hashtags %}
       <div class="meta">{% for tag in p.hashtags %}<span class="pill">{{ tag }}</span>{% endfor %}</div>

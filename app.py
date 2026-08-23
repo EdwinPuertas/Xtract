@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from flask import Flask, Response, redirect, render_template, request, session, url_for
 
 import xauth
+from nlp.geo import COUNTRIES, detect_country
 
 load_dotenv()
 
@@ -39,6 +40,7 @@ TWEET_FIELDS = [
     "author_id",
     "entities",
     "context_annotations",
+    "geo",
 ]
 USER_FIELDS = [
     "id",
@@ -52,6 +54,11 @@ USER_FIELDS = [
     "profile_image_url",
     "public_metrics",
 ]
+PLACE_FIELDS = ["country", "country_code", "full_name", "name", "place_type"]
+
+LANG_OPTIONS = {"": "Cualquiera", "es": "Español", "en": "Inglés", "pt": "Portugués", "fr": "Francés", "de": "Alemán", "it": "Italiano"}
+DEFAULT_LANG = "es"
+COUNTRY_CODES = {c["code"] for c in COUNTRIES}
 
 
 def get_client() -> tweepy.Client:
@@ -94,6 +101,7 @@ def compute_tweet_kpis(posts: list[dict]) -> dict:
             "top_languages": [],
             "top_hashtags": [],
             "top_categories": [],
+            "top_countries": [],
             "top_post": None,
         }
 
@@ -109,6 +117,7 @@ def compute_tweet_kpis(posts: list[dict]) -> dict:
     lang_counts: dict[str, int] = {}
     hashtag_counts: dict[str, int] = {}
     category_counts: dict[str, int] = {}
+    country_counts: dict[str, int] = {}
     for p in posts:
         lang = p.get("lang") or "und"
         lang_counts[lang] = lang_counts.get(lang, 0) + 1
@@ -116,9 +125,13 @@ def compute_tweet_kpis(posts: list[dict]) -> dict:
             hashtag_counts[tag] = hashtag_counts.get(tag, 0) + 1
         for cat in p.get("categories", []):
             category_counts[cat] = category_counts.get(cat, 0) + 1
+        country = p.get("country")
+        if country and country.get("name"):
+            country_counts[country["name"]] = country_counts.get(country["name"], 0) + 1
     top_languages = sorted(lang_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
     top_hashtags = sorted(hashtag_counts.items(), key=lambda kv: kv[1], reverse=True)[:10]
     top_categories = sorted(category_counts.items(), key=lambda kv: kv[1], reverse=True)[:10]
+    top_countries = sorted(country_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
 
     def engagement(p: dict) -> int:
         m = p["metrics"]
@@ -139,6 +152,7 @@ def compute_tweet_kpis(posts: list[dict]) -> dict:
         "top_languages": top_languages,
         "top_hashtags": top_hashtags,
         "top_categories": top_categories,
+        "top_countries": top_countries,
         "top_post": {
             "id": top_post["id"],
             "text": top_post["text"],
@@ -193,7 +207,13 @@ def _build_user_dict(u) -> dict:
     }
 
 
-def _build_post_dict(t, users_by_id: dict) -> dict:
+def _build_post_dict(t, users_by_id: dict, places_by_id: dict | None = None) -> dict:
+    places_by_id = places_by_id or {}
+    place = None
+    if t.geo and t.geo.get("place_id"):
+        place = places_by_id.get(t.geo["place_id"])
+    author = users_by_id.get(t.author_id)
+
     return {
         "id": t.id,
         "text": t.text,
@@ -202,9 +222,11 @@ def _build_post_dict(t, users_by_id: dict) -> dict:
         "possibly_sensitive": t.possibly_sensitive,
         "source": t.source,
         "metrics": t.public_metrics,
-        "author": users_by_id.get(t.author_id),
+        "author": author,
         "hashtags": _extract_hashtags(t),
         "categories": _extract_categories(t),
+        "place": place,
+        "country": detect_country(place, author.get("location") if author else None),
     }
 
 
@@ -216,18 +238,35 @@ def _users_by_id_from_includes(response) -> dict:
     return users_by_id
 
 
+def _places_by_id_from_includes(response) -> dict:
+    places_by_id = {}
+    if response.includes and "places" in response.includes:
+        for place in response.includes["places"]:
+            places_by_id[place.id] = {
+                "id": place.id,
+                "name": place.name,
+                "full_name": place.full_name,
+                "country": place.country,
+                "country_code": place.country_code,
+                "place_type": place.place_type,
+            }
+    return places_by_id
+
+
 def search_tweets(query: str, max_results: int) -> dict:
     client = get_client()
     response = client.search_recent_tweets(
         query=query,
         max_results=max_results,
         tweet_fields=TWEET_FIELDS,
-        expansions=["author_id"],
+        expansions=["author_id", "geo.place_id"],
         user_fields=USER_FIELDS,
+        place_fields=PLACE_FIELDS,
     )
 
     users_by_id = _users_by_id_from_includes(response)
-    posts = [_build_post_dict(t, users_by_id) for t in response.data or []]
+    places_by_id = _places_by_id_from_includes(response)
+    posts = [_build_post_dict(t, users_by_id, places_by_id) for t in response.data or []]
 
     return {
         "mode": "tweets",
@@ -252,9 +291,12 @@ def get_user_timeline(user_id: str, max_results: int) -> dict:
         max_results=max_results,
         tweet_fields=TWEET_FIELDS,
         exclude=["retweets", "replies"],
+        expansions=["geo.place_id"],
+        place_fields=PLACE_FIELDS,
     )
     users_by_id = {profile["id"]: profile}
-    posts = [_build_post_dict(t, users_by_id) for t in tweets_response.data or []]
+    places_by_id = _places_by_id_from_includes(tweets_response)
+    posts = [_build_post_dict(t, users_by_id, places_by_id) for t in tweets_response.data or []]
 
     return {
         "mode": "tweets",
@@ -316,7 +358,7 @@ def search_users(query: str, max_results: int) -> dict:
 GROUP_BY_OPTIONS = {"none", "hashtag", "category"}
 
 
-def parse_search_params(args) -> tuple[str, str, int]:
+def parse_search_params(args) -> tuple[str, str, int, str, str]:
     mode = args.get("mode", "tweets")
     query = args.get("query", "").strip()
     try:
@@ -324,13 +366,34 @@ def parse_search_params(args) -> tuple[str, str, int]:
     except ValueError:
         max_results = 10
     max_results = max(10, min(max_results, 100))
-    return mode, query, max_results
+
+    lang = args.get("lang", DEFAULT_LANG)
+    if lang not in LANG_OPTIONS:
+        lang = DEFAULT_LANG
+
+    country = args.get("country", "").strip().upper()
+    if country not in COUNTRY_CODES:
+        country = ""
+
+    return mode, query, max_results, lang, country
 
 
-def run_search(mode: str, query: str, max_results: int) -> dict:
+def _augment_query(query: str, lang: str, country: str) -> str:
+    """Agrega los operadores lang: / place_country: a la búsqueda de posts,
+    salvo que el usuario ya los haya escrito manualmente en su búsqueda."""
+    lowered = query.lower()
+    parts = [query]
+    if lang and "lang:" not in lowered:
+        parts.append(f"lang:{lang}")
+    if country and "place_country:" not in lowered:
+        parts.append(f"place_country:{country}")
+    return " ".join(parts)
+
+
+def run_search(mode: str, query: str, max_results: int, lang: str = "", country: str = "") -> dict:
     if mode == "users":
         return search_users(query, max_results)
-    return search_tweets(query, max_results)
+    return search_tweets(_augment_query(query, lang, country), max_results)
 
 
 def group_posts(posts: list[dict], group_by: str) -> list[dict]:
@@ -350,6 +413,11 @@ def group_posts(posts: list[dict], group_by: str) -> list[dict]:
 @app.context_processor
 def inject_connected():
     return {"connected": bool(session.get("access_token"))}
+
+
+@app.context_processor
+def inject_search_filters():
+    return {"lang_options": LANG_OPTIONS, "countries": COUNTRIES, "default_lang": DEFAULT_LANG}
 
 
 def get_user_access_token() -> str:
@@ -388,7 +456,7 @@ def timeline(user_id):
 
 @app.route("/search", methods=["POST"])
 def search():
-    mode, query, max_results = parse_search_params(request.form)
+    mode, query, max_results, lang, country = parse_search_params(request.form)
     group_by = request.form.get("group_by", "none")
     if group_by not in GROUP_BY_OPTIONS:
         group_by = "none"
@@ -399,13 +467,15 @@ def search():
         "max_results": max_results,
         "group_by": group_by,
         "analyze_text": analyze_text,
+        "lang": lang,
+        "country": country,
     }
 
     if not query:
         return render_template("index.html", result=None, error="Escribe una búsqueda.", form=form)
 
     try:
-        result = run_search(mode, query, max_results)
+        result = run_search(mode, query, max_results, lang, country)
     except tweepy.errors.Unauthorized:
         return render_template(
             "index.html",
@@ -425,6 +495,16 @@ def search():
             "index.html",
             result=None,
             error=f"Acceso rechazado por la API de X: {exc}. Tu nivel de acceso puede no incluir este endpoint.",
+            form=form,
+        )
+    except tweepy.errors.BadRequest as exc:
+        return render_template(
+            "index.html",
+            result=None,
+            error=(
+                f"La API de X rechazó la búsqueda: {exc}. Si filtraste por país, el operador "
+                "'place_country:' puede no estar disponible en tu nivel de acceso."
+            ),
             form=form,
         )
     except RuntimeError as exc:
@@ -448,10 +528,10 @@ def search():
 
 @app.route("/export.json", methods=["GET"])
 def export_json():
-    mode, query, max_results = parse_search_params(request.args)
+    mode, query, max_results, lang, country = parse_search_params(request.args)
     if not query:
         return Response("Falta el parámetro 'query'.", status=400)
-    result = run_search(mode, query, max_results)
+    result = run_search(mode, query, max_results, lang, country)
     payload = json.dumps(result, ensure_ascii=False, indent=2)
     return Response(
         payload,
@@ -462,10 +542,10 @@ def export_json():
 
 @app.route("/export.ndjson", methods=["GET"])
 def export_ndjson():
-    mode, query, max_results = parse_search_params(request.args)
+    mode, query, max_results, lang, country = parse_search_params(request.args)
     if not query:
         return Response("Falta el parámetro 'query'.", status=400)
-    result = run_search(mode, query, max_results)
+    result = run_search(mode, query, max_results, lang, country)
 
     items = result.get("posts") if result.get("mode") == "tweets" else result.get("users")
     lines = [json.dumps(item, ensure_ascii=False) for item in (items or [])]
@@ -480,7 +560,7 @@ def export_ndjson():
 TWEET_CSV_COLUMNS = [
     "id", "text", "created_at", "lang", "like_count", "retweet_count",
     "reply_count", "quote_count", "author_username", "author_name",
-    "author_followers", "hashtags", "categories",
+    "author_followers", "hashtags", "categories", "country",
 ]
 USER_CSV_COLUMNS = [
     "id", "username", "name", "followers_count", "following_count",
@@ -492,11 +572,12 @@ USER_CSV_COLUMNS = [
 def _tweet_to_csv_row(p: dict) -> list:
     m = p.get("metrics") or {}
     author = p.get("author") or {}
+    country = p.get("country") or {}
     return [
         p.get("id"), p.get("text"), p.get("created_at"), p.get("lang"),
         m.get("like_count"), m.get("retweet_count"), m.get("reply_count"), m.get("quote_count"),
         author.get("username"), author.get("name"), (author.get("metrics") or {}).get("followers_count"),
-        " ".join(p.get("hashtags") or []), "; ".join(p.get("categories") or []),
+        " ".join(p.get("hashtags") or []), "; ".join(p.get("categories") or []), country.get("name"),
     ]
 
 
@@ -512,10 +593,10 @@ def _user_to_csv_row(u: dict) -> list:
 
 @app.route("/export.csv", methods=["GET"])
 def export_csv():
-    mode, query, max_results = parse_search_params(request.args)
+    mode, query, max_results, lang, country = parse_search_params(request.args)
     if not query:
         return Response("Falta el parámetro 'query'.", status=400)
-    result = run_search(mode, query, max_results)
+    result = run_search(mode, query, max_results, lang, country)
 
     buffer = io.StringIO()
     writer = csv.writer(buffer)

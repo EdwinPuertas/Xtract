@@ -52,9 +52,24 @@
         </select>
       </div>
       <div class="field-row">
+        <label for="lang">Idioma</label>
+        <select id="lang" name="lang">
+          {% for code, label in lang_options.items() %}
+            <option value="{{ code }}" {% if form.get('lang', default_lang) == code %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+        <label for="country">País (solo posts geoetiquetados)</label>
+        <select id="country" name="country">
+          <option value="" {% if not form.get('country') %}selected{% endif %}>Todos los países</option>
+          {% for c in countries %}
+            <option value="{{ c.code }}" {% if form.get('country') == c.code %}selected{% endif %}>{{ c.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field-row">
         <label class="checkbox-field">
           <input type="checkbox" name="analyze_text" {% if form.get('analyze_text') %}checked{% endif %}>
-          Analizar texto (tópicos, sintagmas, n-grams, sentimientos)
+          Analizar texto (tópicos, sintagmas, n-grams, sentimientos y emociones VAD)
         </label>
         <button type="submit">Buscar</button>
       </div>
@@ -70,9 +85,9 @@
           <h2>Resultados ({{ result.count }})</h2>
           <div class="export-links">
             Exportar:
-            <a href="{{ url_for('export_json', mode=form.mode, query=form.query, max_results=form.max_results) }}">JSON</a>
-            <a href="{{ url_for('export_ndjson', mode=form.mode, query=form.query, max_results=form.max_results) }}">NDJSON</a>
-            <a href="{{ url_for('export_csv', mode=form.mode, query=form.query, max_results=form.max_results) }}">CSV</a>
+            <a href="{{ url_for('export_json', mode=form.mode, query=form.query, max_results=form.max_results, lang=form.lang, country=form.country) }}">JSON</a>
+            <a href="{{ url_for('export_ndjson', mode=form.mode, query=form.query, max_results=form.max_results, lang=form.lang, country=form.country) }}">NDJSON</a>
+            <a href="{{ url_for('export_csv', mode=form.mode, query=form.query, max_results=form.max_results, lang=form.lang, country=form.country) }}">CSV</a>
           </div>
         </div>
 
@@ -106,6 +121,12 @@
                 {% for cat, n in result.kpis.top_categories %}<span class="pill">{{ cat }}: {{ n }}</span>{% endfor %}
               </div>
             {% endif %}
+            {% if result.kpis.top_countries %}
+              <div class="kpi-sub">
+                Países detectados:
+                {% for country, n in result.kpis.top_countries %}<span class="pill">🌎 {{ country }}: {{ n }}</span>{% endfor %}
+              </div>
+            {% endif %}
             {% if result.kpis.top_post %}
               <div class="kpi-sub">
                 Post con más interacción ({{ result.kpis.top_post.engagement }}):
@@ -137,6 +158,20 @@
                 </div>
               {% endif %}
 
+              {% if nlp.vad_summary and nlp.vad_summary.emotion_counts %}
+                <strong class="muted">Emociones (modelo VAD)</strong>
+                <div class="kpi-sub">
+                  {% for emotion, n in nlp.vad_summary.emotion_counts.items() %}<span class="pill">{{ emotion }}: {{ n }}</span>{% endfor %}
+                </div>
+                {% if nlp.vad_summary.lexicon_source == 'fallback_lexico_propio' %}
+                  <p class="muted" style="font-size:0.85rem;">
+                    Calculado con el léxico propio de respaldo (no el NRC VAD Lexicon v2 completo);
+                    ver <code>nlp/resources/README.md</code> para instalar el léxico real y obtener
+                    resultados más precisos.
+                  </p>
+                {% endif %}
+              {% endif %}
+
               {% if nlp.top_noun_phrases %}
                 <strong class="muted">Sintagmas nominales (tópicos frecuentes)</strong>
                 <div class="kpi-sub">
@@ -161,15 +196,16 @@
           {% endif %}
 
           {% set sentiments = result.nlp.sentiments if result.nlp else None %}
+          {% set vad = result.nlp.vad if result.nlp else None %}
           {% if result.posts|length == 0 %}
             <p>No se encontraron posts para esta búsqueda.</p>
           {% elif result.grouped %}
             {% for group in result.grouped %}
               <h3 class="group-header">{{ group.key }} <span class="muted">({{ group.count }})</span></h3>
-              {% for p in group.posts %}{{ macros.tweet_card(p, sentiments) }}{% endfor %}
+              {% for p in group.posts %}{{ macros.tweet_card(p, sentiments, vad) }}{% endfor %}
             {% endfor %}
           {% else %}
-            {% for p in result.posts %}{{ macros.tweet_card(p, sentiments) }}{% endfor %}
+            {% for p in result.posts %}{{ macros.tweet_card(p, sentiments, vad) }}{% endfor %}
           {% endif %}
         {% else %}
           {% if result.kpis and result.kpis.total_users > 0 %}
