@@ -5,3 +5,5 @@ __pycache__/
 .venv_clean/
 venv/
 nltk_data/
+nlp/resources/*.txt
+nlp/resources/*.zip

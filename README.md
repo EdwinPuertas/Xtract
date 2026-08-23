@@ -76,10 +76,22 @@ Callback URI registrado en X).
   para ver sus últimos posts, KPIs y exportar esa vista.
 - **Analizar texto** (checkbox en el formulario, solo búsqueda de posts): activa un análisis
   lingüístico de los resultados con spaCy/nltk — sintagmas nominales (tópicos frecuentes),
-  bigramas/trigramas, y sentimiento por post (positivo/neutral/negativo, basado en un léxico
-  de adjetivos en español/inglés). Aumenta el tiempo de respuesta de la búsqueda.
+  bigramas/trigramas, sentimiento por post (positivo/neutral/negativo, basado en un léxico
+  de adjetivos en español/inglés) y **emociones por post según el modelo VAD** (valencia,
+  activación, dominancia) usando el NRC VAD Lexicon v2. Aumenta el tiempo de respuesta de
+  la búsqueda.
+- **Idioma** (solo búsqueda de posts): filtra por idioma con el operador `lang:` de la API
+  de X. Por defecto es **español (`es`)**; puedes cambiarlo o dejarlo en "Cualquiera".
+- **País** (solo búsqueda de posts): filtra con el operador `place_country:` de la API de X.
+  Solo aplica a posts geoetiquetados (la mayoría de los posts no lo están, ya que el usuario
+  debe activar la ubicación de forma explícita), y requiere que tu nivel de acceso a la API
+  soporte ese operador. Si tu app lo rechaza, el resultado de "país" seguirá calculándose por
+  post a partir de la ubicación de perfil de cada autor (ver punto siguiente).
+- **País detectado por post**: cada post muestra un país inferido — a partir de su
+  geoetiquetado si lo tiene, o si no, de un análisis heurístico del campo de ubicación libre
+  del perfil del autor (`nlp/geo.py`). Es una aproximación, no un dato verificado por X.
 
-## Módulo `nlp/` (código propietario de análisis lingüístico)
+## Módulo `nlp/` (código propietario de análisis lingüístico y detección de país)
 
 El paquete `nlp/` contiene el motor propio de procesamiento de lenguaje natural que
 alimenta la opción **Analizar texto** del formulario de búsqueda de posts. No es una
@@ -155,14 +167,62 @@ Orquesta el análisis de un lote de posts y es el punto de entrada que consume `
   2. Para cada post: detecta idioma (`es`/`en`, default `es`), limpia el texto
      (`TextProcessing.transformer`), lo tokeniza y extrae bigramas, trigramas y sintagmas
      nominales, acumulando frecuencias globales con `collections.Counter`.
-  3. Calcula el sentimiento de cada post individualmente.
+  3. Calcula el sentimiento y las emociones VAD de cada post individualmente.
   4. Devuelve un diccionario con: `analyzed_count`, los 15 bigramas/trigramas/sintagmas
      nominales más frecuentes (`top_bigrams`, `top_trigrams`, `top_noun_phrases`), el detalle
-     de sentimiento por post indexado por `id` (`sentiments`) y un resumen de conteos por
-     etiqueta (`sentiment_summary`).
+     de sentimiento por post indexado por `id` (`sentiments`), un resumen de conteos por
+     etiqueta (`sentiment_summary`), el detalle de emociones VAD por post (`vad`) y un
+     resumen (`vad_summary`) con el conteo por emoción y la fuente del léxico usado.
 
 Este resultado (`result["nlp"]`) es lo que consume `templates/index.html` para pintar los
-tópicos frecuentes, n-gramas y sentimiento junto a los resultados de la búsqueda.
+tópicos frecuentes, n-gramas, sentimiento y emociones junto a los resultados de la búsqueda.
+
+### `nlp/vad_lexicon.py` — carga del NRC VAD Lexicon v2
+
+Loader del **NRC Valence-Arousal-Dominance (VAD) Lexicon v2**. El archivo del léxico no se
+distribuye con el repo (licencia de NRC, uso libre para investigación previa solicitud); ver
+`nlp/resources/README.md` para instrucciones de instalación. `load_lexicon` busca el archivo
+en `nlp/resources/NRC-VAD-Lexicon-v2.txt` (o en la ruta de la variable de entorno
+`NRC_VAD_LEXICON_PATH`), parsea líneas `palabra<TAB>valence<TAB>arousal<TAB>dominance` y
+cachea el resultado en memoria. Si el archivo no existe, devuelve un diccionario vacío en
+vez de fallar. `is_lexicon_available()` indica si hay datos reales cargados.
+
+### `nlp/vad_emotion.py` — algoritmo de emociones (modelo VAD)
+
+Calcula la emoción de un texto a partir del promedio de valencia/activación/dominancia de
+sus palabras:
+
+- **`compute_vad(text, lang="es")`**: tokeniza el texto (`TextProcessing.tokenizer`), busca
+  cada token en el NRC VAD Lexicon (vía `vad_lexicon.load_lexicon`) y promedia los valores
+  `valence`/`arousal`/`dominance` de las palabras encontradas. Clasifica el resultado en una
+  emoción discreta (`alegría`, `sorpresa`, `calma`, `alivio`, `enojo`, `miedo`,
+  `aburrimiento`, `tristeza` o `neutral`) con `_label_from_vad`, una heurística de octantes
+  sobre el espacio VAD (signo de cada dimensión respecto al punto neutro 0.5, con una banda
+  muerta de ±0.08 alrededor del centro para el caso `neutral`).
+- Si el NRC VAD Lexicon real no está instalado, usa `_fallback_lexicon`: un léxico mucho más
+  pequeño derivado de los adjetivos positivos/negativos de `lexical_features.py` (valencia
+  aproximada 0.8/0.2, activación y dominancia neutras en 0.5). El resultado siempre incluye
+  `source` (`nrc_vad_v2` o `fallback_lexico_propio`) para saber qué tan confiable es.
+- Si ninguna palabra del texto está en el léxico disponible, devuelve `emotion: "sin_datos"`.
+
+### `nlp/geo.py` — detección heurística del país de un post
+
+No usa geocodificación externa. `COUNTRIES` es un catálogo propio (código ISO, nombre,
+gentilicios/alias y ciudades principales) para un conjunto de países de habla hispana más
+algunos adicionales (usado también para poblar el selector de país del formulario de
+búsqueda). `detect_country(place, author_location)`:
+
+1. Si el post está geoetiquetado (`place` viene de la expansión `geo.place_id` de la API de
+   X, con `country`/`country_code`), usa ese dato — es la fuente más confiable.
+2. Si no, intenta inferir el país normalizando (minúsculas, sin tildes) el campo de
+   ubicación libre del perfil del autor (`location`) y buscando coincidencias contra los
+   nombres/alias/ciudades del catálogo `COUNTRIES`.
+3. Si no hay coincidencia, devuelve `None`.
+
+El resultado incluye `source` (`"geolocalización del post"` o `"ubicación del perfil
+(aproximado)"`) para que quede claro que el segundo caso es una aproximación y no un dato
+verificado por X. Se usa en `app.py` (`_build_post_dict`) para anotar cada post con su
+`country`, y en `compute_tweet_kpis` para el resumen `top_countries`.
 
 ### `nlp/utils.py` — clase `Utils`
 
