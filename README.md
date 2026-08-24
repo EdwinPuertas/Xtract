@@ -238,15 +238,19 @@ Orquesta el análisis de un lote de posts y es el punto de entrada que consume `
 Este resultado (`result["nlp"]`) es lo que consume `templates/index.html` para pintar los
 tópicos frecuentes, n-gramas, sentimiento y emociones junto a los resultados de la búsqueda.
 
-### `nlp/vad_lexicon.py` — carga del NRC VAD Lexicon v2
+### `nlp/vad_lexicon.py` — carga del NRC VAD Lexicon
 
-Loader del **NRC Valence-Arousal-Dominance (VAD) Lexicon v2**. El archivo del léxico no se
-distribuye con el repo (licencia de NRC, uso libre para investigación previa solicitud); ver
-`nlp/resources/README.md` para instrucciones de instalación. `load_lexicon` busca el archivo
-en `nlp/resources/NRC-VAD-Lexicon-v2.txt` (o en la ruta de la variable de entorno
-`NRC_VAD_LEXICON_PATH`), parsea líneas `palabra<TAB>valence<TAB>arousal<TAB>dominance` y
-cachea el resultado en memoria. Si el archivo no existe, devuelve un diccionario vacío en
-vez de fallar. `is_lexicon_available()` indica si hay datos reales cargados.
+Loader del **NRC Valence-Arousal-Dominance (VAD) Lexicon**. El léxico real (v2.1, en inglés,
+54 801 términos) ya está incluido en `nlp/NRC-VAD-Lexicon-v2.1.txt` — ver
+`nlp/resources/README.md` para su formato, la limitación de que solo cubre inglés, y la nota
+sobre licencia. `load_lexicon` busca, en orden, la ruta en `NRC_VAD_LEXICON_PATH`,
+`nlp/NRC-VAD-Lexicon-v2.1.txt`, `nlp/resources/NRC-VAD-Lexicon-v2.1.txt` y
+`nlp/resources/NRC-VAD-Lexicon-v2.txt`; parsea líneas `término<TAB>valence<TAB>arousal<TAB>dominance`
+y cachea el resultado en memoria. El archivo oficial de NRC usa escala **-1..1** con 0 como
+neutro; si detecta valores negativos, `load_lexicon` los remapea automáticamente a **0..1**
+con 0.5 como neutro (la escala que usa el resto del módulo). Si no encuentra ningún archivo,
+devuelve un diccionario vacío en vez de fallar. `is_lexicon_available()` indica si hay datos
+reales cargados.
 
 ### `nlp/vad_emotion.py` — algoritmo de emociones (modelo VAD)
 
