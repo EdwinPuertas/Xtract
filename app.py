@@ -10,6 +10,7 @@ import tweepy
 from dotenv import load_dotenv
 from flask import Flask, Response, redirect, render_template, request, session, url_for
 
+import charts
 import xauth
 from nlp.geo import COUNTRIES, detect_country
 
@@ -23,6 +24,15 @@ try:
 except Exception as _nlp_exc:  # spaCy/nltk models missing or failed to load
     NLP_AVAILABLE = False
     NLP_IMPORT_ERROR = str(_nlp_exc)
+
+try:
+    import trends_store
+
+    TRENDS_STORE_AVAILABLE = True
+    TRENDS_STORE_IMPORT_ERROR = ""
+except Exception as _trends_exc:  # psycopg2 no instalado o DATABASE_URL inválida
+    TRENDS_STORE_AVAILABLE = False
+    TRENDS_STORE_IMPORT_ERROR = str(_trends_exc)
 
 BEARER_TOKEN = os.environ.get("X_BEARER_TOKEN", "")
 
@@ -355,7 +365,14 @@ def search_users(query: str, max_results: int) -> dict:
     }
 
 
-GROUP_BY_OPTIONS = {"none", "hashtag", "category"}
+GROUP_BY_OPTIONS = {"none", "hashtag", "category", "sentiment", "emotion"}
+GROUP_BY_LABELS = {
+    "none": "Sin agrupar",
+    "hashtag": "Hashtag",
+    "category": "Categoría",
+    "sentiment": "Sentimiento",
+    "emotion": "Emoción (VAD)",
+}
 
 
 def parse_search_params(args) -> tuple[str, str, int, str, str]:
@@ -396,18 +413,38 @@ def run_search(mode: str, query: str, max_results: int, lang: str = "", country:
     return search_tweets(_augment_query(query, lang, country), max_results)
 
 
+_GROUP_BY_FIELDS = {
+    "hashtag": ("hashtags", "Sin hashtag", True),
+    "category": ("categories", "Sin categoría", True),
+    "sentiment": ("sentiment", "Sin sentimiento", False),
+    "emotion": ("emotion", "Sin emoción", False),
+}
+
+
 def group_posts(posts: list[dict], group_by: str) -> list[dict]:
-    field = "hashtags" if group_by == "hashtag" else "categories"
-    fallback = "Sin hashtag" if group_by == "hashtag" else "Sin categoría"
+    field, fallback, is_list = _GROUP_BY_FIELDS.get(group_by, _GROUP_BY_FIELDS["hashtag"])
 
     groups: dict[str, list[dict]] = {}
     for p in posts:
-        keys = p.get(field) or [fallback]
+        value = p.get(field)
+        keys = (value or [fallback]) if is_list else [value or fallback]
         for key in keys:
             groups.setdefault(key, []).append(p)
 
     ordered = sorted(groups.items(), key=lambda kv: len(kv[1]), reverse=True)
     return [{"key": key, "posts": items, "count": len(items)} for key, items in ordered]
+
+
+def _annotate_posts_with_nlp(posts: list[dict], nlp: dict) -> None:
+    """Copia el sentimiento y la emoción VAD calculados por analyze_posts a cada
+    post, para poder agrupar/filtrar por esos campos igual que por hashtag."""
+    sentiments = nlp.get("sentiments") or {}
+    vad = nlp.get("vad") or {}
+    for p in posts:
+        sentiment = sentiments.get(p["id"])
+        p["sentiment"] = sentiment["label"] if sentiment else None
+        emotion = vad.get(p["id"])
+        p["emotion"] = emotion["emotion"] if emotion and emotion.get("emotion") != "sin_datos" else None
 
 
 @app.context_processor
@@ -417,7 +454,12 @@ def inject_connected():
 
 @app.context_processor
 def inject_search_filters():
-    return {"lang_options": LANG_OPTIONS, "countries": COUNTRIES, "default_lang": DEFAULT_LANG}
+    return {
+        "lang_options": LANG_OPTIONS,
+        "countries": COUNTRIES,
+        "default_lang": DEFAULT_LANG,
+        "group_by_labels": GROUP_BY_LABELS,
+    }
 
 
 def get_user_access_token() -> str:
@@ -454,19 +496,88 @@ def timeline(user_id):
     return render_template("timeline.html", result=result, profile=result["profile"], error=None)
 
 
+TRENDS_HISTORY_LIMIT = 60
+
+
+@app.route("/trends", methods=["GET"])
+def trends():
+    if not TRENDS_STORE_AVAILABLE:
+        return render_template(
+            "trends.html",
+            error=(
+                "La vista de tendencias no está disponible en este despliegue: "
+                f"{TRENDS_STORE_IMPORT_ERROR}"
+            ),
+            runs=None,
+            sentiment_chart=None,
+            emotion_chart=None,
+            query=None,
+        )
+
+    try:
+        runs = trends_store.get_recent_runs(limit=TRENDS_HISTORY_LIMIT)
+    except RuntimeError as exc:
+        return render_template(
+            "trends.html", error=str(exc), runs=None, sentiment_chart=None, emotion_chart=None, query=None
+        )
+    except Exception as exc:
+        return render_template(
+            "trends.html",
+            error=f"No se pudo leer la base de datos de tendencias: {exc}",
+            runs=None,
+            sentiment_chart=None,
+            emotion_chart=None,
+            query=None,
+        )
+
+    return render_template(
+        "trends.html",
+        error=None,
+        runs=list(reversed(runs)),  # más reciente primero en la tabla histórica
+        sentiment_chart=charts.build_sentiment_chart(runs),
+        emotion_chart=charts.build_emotion_chart(runs),
+        query=runs[-1]["query"] if runs else None,
+    )
+
+
+@app.route("/api/cron/trends", methods=["GET", "POST"])
+def cron_trends():
+    """Endpoint invocado por el Cron Job de Vercel (ver vercel.json) o de
+    forma manual para correr la recolección + análisis periódico. Protegido
+    con CRON_SECRET si está configurado (Vercel lo envía automáticamente
+    como 'Authorization: Bearer <CRON_SECRET>' en sus Cron Jobs)."""
+    cron_secret = os.environ.get("CRON_SECRET", "")
+    if cron_secret and request.headers.get("Authorization") != f"Bearer {cron_secret}":
+        return Response("No autorizado.", status=401)
+
+    if not NLP_AVAILABLE:
+        return Response(f"El análisis de texto no está disponible: {NLP_IMPORT_ERROR}", status=503)
+    if not TRENDS_STORE_AVAILABLE:
+        return Response(f"El almacenamiento de tendencias no está disponible: {TRENDS_STORE_IMPORT_ERROR}", status=503)
+
+    try:
+        from trends_job import run_trends_job  # import perezoso: evita el ciclo trends_job -> app
+
+        result = run_trends_job()
+    except tweepy.errors.TweepyException as exc:
+        return Response(f"Error consultando la API de X: {exc}", status=502)
+    except RuntimeError as exc:
+        return Response(str(exc), status=500)
+
+    return Response(json.dumps(result, ensure_ascii=False), mimetype="application/json")
+
+
 @app.route("/search", methods=["POST"])
 def search():
     mode, query, max_results, lang, country = parse_search_params(request.form)
     group_by = request.form.get("group_by", "none")
     if group_by not in GROUP_BY_OPTIONS:
         group_by = "none"
-    analyze_text = request.form.get("analyze_text") == "on"
     form = {
         "mode": mode,
         "query": query,
         "max_results": max_results,
         "group_by": group_by,
-        "analyze_text": analyze_text,
         "lang": lang,
         "country": country,
     }
@@ -510,18 +621,19 @@ def search():
     except RuntimeError as exc:
         return render_template("index.html", result=None, error=str(exc), form=form)
 
-    if result.get("mode") == "tweets" and group_by != "none":
-        result["grouped"] = group_posts(result["posts"], group_by)
-
     nlp_error = None
-    if result.get("mode") == "tweets" and analyze_text:
+    if result.get("mode") == "tweets":
         if NLP_AVAILABLE:
             try:
                 result["nlp"] = analyze_posts(result["posts"])
+                _annotate_posts_with_nlp(result["posts"], result["nlp"])
             except Exception as exc:
                 nlp_error = f"No se pudo completar el análisis de texto: {exc}"
         else:
             nlp_error = f"El análisis de texto no está disponible en este despliegue: {NLP_IMPORT_ERROR}"
+
+    if result.get("mode") == "tweets" and group_by != "none":
+        result["grouped"] = group_posts(result["posts"], group_by)
 
     return render_template("index.html", result=result, error=nlp_error, form=form)
 

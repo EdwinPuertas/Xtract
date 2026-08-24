@@ -12,6 +12,7 @@
       <h1>Xtract</h1>
       <nav class="nav-links">
         <a href="{{ url_for('index') }}">← Buscar</a>
+        <a href="{{ url_for('trends') }}">Tendencias</a>
         {% if connected %}
           <a href="{{ url_for('account') }}">Mi cuenta</a>
           <a href="{{ url_for('logout') }}">Cerrar sesión</a>

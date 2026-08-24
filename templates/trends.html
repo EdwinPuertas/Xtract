@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>Xtract — Tendencias</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  {% import '_macros.html' as macros %}
+  <main>
+    <div class="results-header">
+      <h1>Xtract</h1>
+      <nav class="nav-links">
+        <a href="{{ url_for('index') }}">← Buscar</a>
+        {% if connected %}
+          <a href="{{ url_for('account') }}">Mi cuenta</a>
+          <a href="{{ url_for('logout') }}">Cerrar sesión</a>
+        {% else %}
+          <a href="{{ url_for('login') }}">Conectar cuenta de X</a>
+        {% endif %}
+      </nav>
+    </div>
+    <p class="subtitle">
+      Evolución en el tiempo de tópicos, tendencias, sentimiento y emociones, calculada
+      periódicamente sobre una muestra de posts.
+    </p>
+
+    {% if error %}
+      <div class="error">{{ error }}</div>
+    {% endif %}
+
+    {% if runs is not none %}
+      <div class="trends-header">
+        {% if query %}
+          <strong>Consulta rastreada:</strong> <code>{{ query }}</code>
+        {% else %}
+          <strong>Todavía no hay corridas guardadas.</strong>
+        {% endif %}
+        <p class="muted">
+          Se actualiza automáticamente una vez al día (Cron Job de Vercel,
+          <code>/api/cron/trends</code>) y guarda un resumen por corrida — hasta
+          {{ runs|length }} corridas mostradas aquí.
+        </p>
+      </div>
+
+      {{ macros.line_chart(sentiment_chart, 'Sentimiento en el tiempo (% de posts analizados por corrida)') }}
+      {{ macros.line_chart(emotion_chart, 'Emociones VAD en el tiempo (% de posts analizados por corrida)') }}
+
+      <h2>Historial de corridas</h2>
+      {% if runs|length == 0 %}
+        <p class="muted">
+          Aún no se ha ejecutado ninguna corrida. Se crea la primera automáticamente con el
+          cron diario, o puedes dispararla manualmente contra
+          <code>/api/cron/trends</code>.
+        </p>
+      {% endif %}
+      {% for run in runs %}
+        <article class="history-run">
+          <h4>{{ run.run_at }} — {{ run.post_count }} posts recolectados, {{ run.analyzed_count }} analizados</h4>
+
+          {% if run.kpis.top_hashtags %}
+            <div class="kpi-sub">
+              Hashtags: {% for tag, n in run.kpis.top_hashtags %}<span class="pill">{{ tag }}: {{ n }}</span>{% endfor %}
+            </div>
+          {% endif %}
+          {% if run.nlp.top_noun_phrases %}
+            <div class="kpi-sub">
+              Tópicos: {% for phrase, n in run.nlp.top_noun_phrases %}<span class="pill">{{ phrase }}: {{ n }}</span>{% endfor %}
+            </div>
+          {% endif %}
+          {% if run.nlp.top_bigrams %}
+            <div class="kpi-sub">
+              Bigramas: {% for gram, n in run.nlp.top_bigrams %}<span class="pill">{{ gram }}: {{ n }}</span>{% endfor %}
+            </div>
+          {% endif %}
+          {% if run.nlp.top_trigrams %}
+            <div class="kpi-sub">
+              Trigramas: {% for gram, n in run.nlp.top_trigrams %}<span class="pill">{{ gram }}: {{ n }}</span>{% endfor %}
+            </div>
+          {% endif %}
+          {% if run.kpis.top_countries %}
+            <div class="kpi-sub">
+              Países: {% for country, n in run.kpis.top_countries %}<span class="pill">🌎 {{ country }}: {{ n }}</span>{% endfor %}
+            </div>
+          {% endif %}
+          {% if run.kpis.top_languages %}
+            <div class="kpi-sub">
+              Idiomas: {% for lang, n in run.kpis.top_languages %}<span class="pill">{{ lang }}: {{ n }}</span>{% endfor %}
+            </div>
+          {% endif %}
+        </article>
+      {% endfor %}
+    {% endif %}
+  </main>
+</body>
+</html>

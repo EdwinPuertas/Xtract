@@ -46,3 +46,52 @@
     {% endif %}
   </article>
 {% endmacro %}
+
+{% macro line_chart(chart, title) %}
+  <div class="chart-block">
+    <strong>{{ title }}</strong>
+    {% if chart.series and chart.dates|length > 0 %}
+      <svg viewBox="0 0 {{ chart.width }} {{ chart.height }}" class="line-chart" role="img" aria-label="{{ title }}">
+        {% for g in chart.gridlines %}
+          <line x1="{{ chart.pad }}" y1="{{ g.y }}" x2="{{ chart.width - chart.pad }}" y2="{{ g.y }}" class="grid-line" />
+          <text x="2" y="{{ g.y + 3 }}" class="grid-label">{{ g.label }}</text>
+        {% endfor %}
+        {% for s in chart.series %}
+          <path d="{{ s.path }}" fill="none" stroke="{{ s.color }}" stroke-width="2" />
+          {% for pt in s.points %}
+            <circle cx="{{ pt.x }}" cy="{{ pt.y }}" r="3" fill="{{ s.color }}" class="chart-point">
+              <title>{{ pt.date }} · {{ s.label }}: {{ pt.value }}%</title>
+            </circle>
+          {% endfor %}
+        {% endfor %}
+      </svg>
+      <div class="chart-legend">
+        {% for s in chart.series %}
+          <span class="legend-item"><span class="legend-dot" style="background:{{ s.color }}"></span>{{ s.label }}</span>
+        {% endfor %}
+      </div>
+      <details class="raw-json">
+        <summary>Ver tabla de datos</summary>
+        <div style="overflow-x:auto;">
+          <table class="chart-table">
+            <thead>
+              <tr><th>Fecha</th>{% for s in chart.series %}<th>{{ s.label }}</th>{% endfor %}</tr>
+            </thead>
+            <tbody>
+              {% for date in chart.dates %}
+                {% set date_idx = loop.index0 %}
+                <tr>
+                  <td>{{ date }}</td>
+                  {% for s in chart.series %}<td>{{ s.points[date_idx].value }}%</td>{% endfor %}
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    {% else %}
+      <p class="muted">Todavía no hay suficientes corridas guardadas para graficar. Se acumulan con cada
+        ejecución de <code>/api/cron/trends</code>.</p>
+    {% endif %}
+  </div>
+{% endmacro %}
