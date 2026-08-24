@@ -11,6 +11,7 @@
     <div class="results-header">
       <h1>Xtract</h1>
       <nav class="nav-links">
+        <a href="{{ url_for('trends') }}">Tendencias</a>
         {% if connected %}
           <a href="{{ url_for('account') }}">Mi cuenta</a>
           <a href="{{ url_for('logout') }}">Cerrar sesión</a>
@@ -46,9 +47,9 @@
         <input type="number" id="max_results" name="max_results" min="10" max="100" value="{{ form.get('max_results', 10) }}">
         <label for="group_by">Agrupar por</label>
         <select id="group_by" name="group_by">
-          <option value="none" {% if form.get('group_by', 'none') == 'none' %}selected{% endif %}>Sin agrupar</option>
-          <option value="hashtag" {% if form.get('group_by') == 'hashtag' %}selected{% endif %}>Hashtag</option>
-          <option value="category" {% if form.get('group_by') == 'category' %}selected{% endif %}>Categoría</option>
+          {% for value, label in group_by_labels.items() %}
+            <option value="{{ value }}" {% if form.get('group_by', 'none') == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
         </select>
       </div>
       <div class="field-row">
@@ -66,11 +67,11 @@
           {% endfor %}
         </select>
       </div>
+      <p class="muted" style="font-size:0.85rem; margin: 0;">
+        Cada búsqueda de posts incluye automáticamente análisis de texto: tópicos,
+        sintagmas, bigramas/trigramas, sentimiento y emociones (VAD).
+      </p>
       <div class="field-row">
-        <label class="checkbox-field">
-          <input type="checkbox" name="analyze_text" {% if form.get('analyze_text') %}checked{% endif %}>
-          Analizar texto (tópicos, sintagmas, n-grams, sentimientos y emociones VAD)
-        </label>
         <button type="submit">Buscar</button>
       </div>
     </form>

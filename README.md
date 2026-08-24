@@ -63,23 +63,27 @@ Callback URI registrado en X).
 - **Buscar posts**: usa la sintaxis de búsqueda de X, p. ej. `from:nasa`, `#IA lang:es`,
   `"inteligencia artificial" -is:retweet`.
 - **Buscar usuarios**: escribe uno o varios `@usuario` separados por comas, p. ej. `nasa, spacex`.
-- **Agrupar por** (solo búsqueda de posts): agrupa los resultados en pantalla por hashtag o
+- **Agrupar por** (solo búsqueda de posts): agrupa los resultados en pantalla por hashtag,
   por categoría (usa `context_annotations` de la API de X, clasificación temática nativa de
-  cada post — Tecnología, Deportes, etc.). Un post con varios hashtags/categorías aparece en
-  cada grupo correspondiente.
-- El resumen de KPIs también incluye los hashtags y categorías más frecuentes de la búsqueda.
+  cada post — Tecnología, Deportes, etc.), por **sentimiento** (positivo/neutral/negativo) o
+  por **emoción VAD** (alegría, enojo, calma, sorpresa, alivio, aburrimiento, miedo, tristeza).
+  Un post con varios hashtags/categorías aparece en cada grupo correspondiente.
+- El resumen de KPIs también incluye los hashtags, categorías y países más frecuentes de la
+  búsqueda.
 - Cada búsqueda se puede exportar como **JSON**, **NDJSON** (un objeto por línea) o **CSV**
-  (con columnas planas, incluyendo hashtags/categorías) desde los enlaces sobre los resultados.
+  (con columnas planas, incluyendo hashtags/categorías/país) desde los enlaces sobre los
+  resultados.
 - **Conectar cuenta de X**: botón en la parte superior → autoriza en X → vuelves a Xtract
   con tu perfil y un cuadro para publicar tweets.
 - **Timeline de usuario**: haz clic en cualquier autor (en resultados de posts o de usuarios)
   para ver sus últimos posts, KPIs y exportar esa vista.
-- **Analizar texto** (checkbox en el formulario, solo búsqueda de posts): activa un análisis
-  lingüístico de los resultados con spaCy/nltk — sintagmas nominales (tópicos frecuentes),
-  bigramas/trigramas, sentimiento por post (positivo/neutral/negativo, basado en un léxico
-  de adjetivos en español/inglés) y **emociones por post según el modelo VAD** (valencia,
-  activación, dominancia) usando el NRC VAD Lexicon v2. Aumenta el tiempo de respuesta de
-  la búsqueda.
+- **Análisis de texto automático** (solo búsqueda de posts, siempre activo): cada búsqueda de
+  posts corre un análisis lingüístico con spaCy/NLTK — sintagmas nominales (tópicos
+  frecuentes), bigramas/trigramas, sentimiento por post (positivo/neutral/negativo, basado en
+  un léxico de adjetivos en español/inglés) y **emociones por post según el modelo VAD**
+  (valencia, activación, dominancia) usando el NRC VAD Lexicon v2. Esto añade latencia a cada
+  búsqueda de posts a cambio de tener siempre tópicos/sentimiento/emociones disponibles (y
+  poder agrupar por ellos).
 - **Idioma** (solo búsqueda de posts): filtra por idioma con el operador `lang:` de la API
   de X. Por defecto es **español (`es`)**; puedes cambiarlo o dejarlo en "Cualquiera".
 - **País** (solo búsqueda de posts): filtra con el operador `place_country:` de la API de X.
@@ -91,13 +95,70 @@ Callback URI registrado en X).
   geoetiquetado si lo tiene, o si no, de un análisis heurístico del campo de ubicación libre
   del perfil del autor (`nlp/geo.py`). Es una aproximación, no un dato verificado por X.
 
+## Vista de tendencias (`/trends`)
+
+Además del análisis por búsqueda, Xtract corre un job periódico que recolecta hasta 1000
+posts para una consulta fija y guarda un resumen histórico, para poder ver la evolución en
+el tiempo de tópicos, tendencias, sentimiento y emociones — no solo el estado de una
+búsqueda puntual.
+
+### Cómo funciona
+
+1. **`/api/cron/trends`** (`app.py` + `trends_job.py`): recolecta hasta `TRENDS_TARGET_POSTS`
+   posts (1000 por defecto, paginando de a 100 con `next_token`) para la consulta
+   `TRENDS_QUERY`, calcula KPIs sobre todos ellos (barato: solo conteos) y un análisis de
+   texto completo (spaCy/NLTK: tópicos, bigramas/trigramas, sentimiento, emociones VAD) sobre
+   los primeros `TRENDS_ANALYZE_MAX_POSTS` (300 por defecto — el análisis con spaCy es
+   costoso por post; se limita para no exceder el tiempo máximo de una función serverless).
+   El resumen agregado (no el detalle por post) se guarda en la base de datos vía
+   `trends_store.save_run`.
+2. **Vercel Cron Job** (`vercel.json`): invoca ese endpoint una vez al día, a las 17:00 UTC
+   (mediodía en Colombia, UTC-5) — el plan gratuito (Hobby) de Vercel solo permite una
+   ejecución diaria por cron; si tienes plan Pro y quieres correrlo cada 12 horas, agrega una
+   segunda entrada en `vercel.json` con otro horario.
+3. **`/trends`** (`app.py` + `charts.py` + `templates/trends.html`): lee las últimas 60
+   corridas guardadas y dibuja dos gráficas de línea (SVG, sin librerías externas) —
+   sentimiento y emociones VAD en el tiempo, como % de los posts analizados por corrida —
+   más un historial cronológico con los hashtags, tópicos, bigramas, trigramas, países e
+   idiomas más frecuentes de cada corrida.
+
+### Configuración necesaria
+
+Vercel no tiene disco persistente entre invocaciones serverless, así que el histórico se
+guarda en una base de datos Postgres externa:
+
+1. Crea una base de datos Postgres gratuita en [Neon](https://neon.tech),
+   [Supabase](https://supabase.com) o Vercel Postgres.
+2. Define `DATABASE_URL` (local en `.env`, producción en las variables de entorno de Vercel)
+   con la cadena de conexión. `trends_store.py` crea la tabla `trend_runs` automáticamente en
+   el primer uso (no hace falta migrar nada a mano).
+3. (Opcional) Ajusta `TRENDS_QUERY`, `TRENDS_TARGET_POSTS` y `TRENDS_ANALYZE_MAX_POSTS` según
+   qué quieras rastrear y cuánto tiempo/crédito de API quieras gastar por corrida.
+4. (Opcional pero recomendado en producción) Define `CRON_SECRET` — Vercel lo envía
+   automáticamente como header `Authorization: Bearer <CRON_SECRET>` en sus Cron Jobs, así
+   que cualquier otra petición a `/api/cron/trends` sin ese header recibe `401`.
+
+Si `DATABASE_URL` no está configurada (o `psycopg2` no está instalado), `/trends` y
+`/api/cron/trends` muestran un error explicando qué falta, sin afectar el resto de la app
+(búsqueda, timeline, login).
+
+### Probarlo manualmente
+
+```bash
+curl -X POST http://127.0.0.1:5000/api/cron/trends
+```
+
+(agrega el header `Authorization: Bearer <CRON_SECRET>` si lo configuraste). Cada corrida de
+1000 posts con análisis de 300 puede tardar uno o varios minutos, sobre todo la primera vez
+que se cargan los modelos de spaCy.
+
 ## Módulo `nlp/` (código propietario de análisis lingüístico y detección de país)
 
 El paquete `nlp/` contiene el motor propio de procesamiento de lenguaje natural que
-alimenta la opción **Analizar texto** del formulario de búsqueda de posts. No es una
+alimenta el análisis automático de cada búsqueda de posts y el job de tendencias. No es una
 dependencia externa: es lógica propietaria de Xtract, construida sobre spaCy y NLTK como
-librerías base. Se activa desde `app.py` (`from nlp.analysis import analyze_posts`, línea
-~18) únicamente cuando el usuario marca el checkbox correspondiente, ya que añade latencia
+librerías base. Se activa desde `app.py` (`from nlp.analysis import analyze_posts`) en cada
+búsqueda de posts, y desde `trends_job.py` en cada corrida programada; añade latencia
 a la búsqueda.
 
 ### `nlp/__init__.py`
@@ -230,6 +291,44 @@ Utilidad genérica de manejo de errores: `standard_error(exc_info)` imprime el t
 completo de una excepción a partir de la tupla `sys.exc_info()`, usada para depuración
 uniforme sin interrumpir el flujo de la aplicación.
 
+## Módulos auxiliares de la vista de tendencias (raíz del proyecto)
+
+### `trends_store.py`
+
+Persistencia en Postgres del histórico de corridas. `ensure_schema()` crea la tabla
+`trend_runs` (`run_at`, `query`, `post_count`, `analyzed_count`, `kpis` y `nlp` como
+columnas `JSONB`) si no existe — no hay migraciones que correr a mano. `save_run(...)`
+inserta una fila; `get_recent_runs(limit=60)` trae las últimas `limit` corridas ordenadas de
+la más antigua a la más reciente (el orden que necesita una gráfica de serie de tiempo).
+Cada función abre y cierra su propia conexión (`psycopg2.connect(DATABASE_URL)`), apropiado
+para invocaciones serverless cortas y poco frecuentes (una vez al día) en vez de un pool de
+conexiones persistente.
+
+### `trends_job.py`
+
+El job que corre `/api/cron/trends`. `fetch_posts(query, target)` pagina
+`search_recent_tweets` con `next_token` hasta juntar `target` posts (100 por página, el
+máximo de la API). `run_trends_job()` orquesta todo: recolecta los posts, calcula KPIs sobre
+todos ellos (`compute_tweet_kpis`, barato) y análisis de texto sobre un subconjunto acotado
+(`analyze_posts(posts, max_posts=TRENDS_ANALYZE_MAX_POSTS)`, costoso por spaCy), reduce
+ambos resultados a sus campos agregados (`_summarize_kpis`/`_summarize_nlp` — se descartan
+`top_post` y el detalle de sentimiento/VAD por post, que no aportan a una serie de tiempo y
+hacen crecer cada fila) y llama a `trends_store.save_run`. Reutiliza directamente las
+funciones de `app.py` (`get_client`, `_build_post_dict`, `compute_tweet_kpis`, etc.) en vez
+de duplicar la lógica de búsqueda.
+
+### `charts.py`
+
+Construye las gráficas de línea de `/trends` como coordenadas SVG puras — sin ninguna
+librería de gráficos externa ni JavaScript. `build_sentiment_chart(runs)` y
+`build_emotion_chart(runs)` reciben las corridas de `trends_store.get_recent_runs` y
+devuelven, para cada corrida, el % de posts en cada categoría (normalizando por el total de
+esa corrida, así corridas con distinto `analyzed_count` son comparables). Los 8 colores de
+emoción son la paleta categórica de referencia del skill de dataviz de Claude — un orden fijo
+de 8 tonos validado contra ceguera al color y contraste en modo claro/oscuro (ver
+`static/style.css`, variables `--emo-1`..`--emo-8`, con su variante de modo oscuro); nunca se
+ciclan ni se reasignan por rango.
+
 ## Notas
 
 - Las credenciales se leen de `.env` (local) o de las variables de entorno del hosting
@@ -254,15 +353,25 @@ como función serverless e incluye `templates/` y `static/`).
    - `X_CLIENT_SECRET`
    - `X_REDIRECT_URI` = `https://tu-dominio.vercel.app/callback` (¡distinto al de local!)
    - `FLASK_SECRET_KEY` (genera una nueva, no reuses la de local)
+   - `DATABASE_URL`, y opcionalmente `TRENDS_QUERY`, `TRENDS_TARGET_POSTS`,
+     `TRENDS_ANALYZE_MAX_POSTS`, `CRON_SECRET` — para la vista `/trends` (ver esa sección).
 4. En el X Developer Portal, agrega ese mismo `https://tu-dominio.vercel.app/callback`
    como Callback URI adicional en **User authentication settings**.
 5. Deploy (o Redeploy si ya existía el proyecto — las variables de entorno no aplican
    solas, hay que redesplegar). Vercel detecta `vercel.json` y despliega `app.py` como
-   función Python.
+   función Python, y registra automáticamente el Cron Job de `/api/cron/trends` (definido en
+   `vercel.json`) — no hace falta configurarlo aparte en el dashboard.
 
 Importante: cada invocación es una función serverless independiente y sin estado —
 por eso las exportaciones re-consultan la API de X en vez de usar un caché en memoria del
-servidor. Ten en cuenta tu cuota mensual de la API si exportas seguido.
+servidor. Ten en cuenta tu cuota mensual de la API si exportas seguido, y el costo/tiempo de
+la corrida diaria de 1000 posts de `/api/cron/trends`.
+
+**Plan Hobby (gratuito) vs Pro**: el cron de `/trends` está configurado para correr una vez
+al día (17:00 UTC), el límite del plan Hobby. Con plan Pro puedes agregar una segunda entrada
+en el arreglo `crons` de `vercel.json` para correrlo cada 12 horas. El plan Hobby también
+limita la duración máxima de una función serverless; si `/api/cron/trends` empieza a fallar
+por timeout, baja `TRENDS_TARGET_POSTS` y/o `TRENDS_ANALYZE_MAX_POSTS`.
 
 ## Autor
 
