@@ -728,6 +728,121 @@ def export_csv():
     )
 
 
+def _add_analysis(result: dict) -> str | None:
+    """Corre el análisis de texto sobre result['posts'] (mismo pipeline que la
+    vista interactiva) y anota cada post con su sentimiento/emoción, para las
+    exportaciones 'con análisis'. No aplica a búsquedas de usuarios (no hay
+    texto de post que analizar). Devuelve un mensaje de error si no se pudo
+    (o None si todo bien) en vez de lanzar, para no romper la descarga."""
+    if result.get("mode") != "tweets":
+        return None
+    if not NLP_AVAILABLE:
+        return f"El análisis de texto no está disponible en este despliegue: {NLP_IMPORT_ERROR}"
+    try:
+        result["nlp"] = analyze_posts(result["posts"])
+        _annotate_posts_with_nlp(result["posts"], result["nlp"])
+    except Exception as exc:
+        return f"No se pudo completar el análisis de texto: {exc}"
+    return None
+
+
+@app.route("/export/analysis.json", methods=["GET"])
+def export_analysis_json():
+    mode, query, max_results, lang, country = parse_search_params(request.args)
+    if not query:
+        return Response("Falta el parámetro 'query'.", status=400)
+    result = run_search(mode, query, max_results, lang, country)
+    nlp_error = _add_analysis(result)
+    if nlp_error:
+        result["nlp_error"] = nlp_error
+    payload = json.dumps(result, ensure_ascii=False, indent=2)
+    return Response(
+        payload,
+        mimetype="application/json",
+        headers={"Content-Disposition": "attachment; filename=twitter-search-analysis.json"},
+    )
+
+
+@app.route("/export/analysis.ndjson", methods=["GET"])
+def export_analysis_ndjson():
+    mode, query, max_results, lang, country = parse_search_params(request.args)
+    if not query:
+        return Response("Falta el parámetro 'query'.", status=400)
+    result = run_search(mode, query, max_results, lang, country)
+    _add_analysis(result)
+
+    items = result.get("posts") if result.get("mode") == "tweets" else result.get("users")
+    lines = [json.dumps(item, ensure_ascii=False) for item in (items or [])]
+    payload = "\n".join(lines) + ("\n" if lines else "")
+    return Response(
+        payload,
+        mimetype="application/x-ndjson",
+        headers={"Content-Disposition": "attachment; filename=twitter-search-analysis.ndjson"},
+    )
+
+
+TWEET_ANALYSIS_CSV_COLUMNS = [
+    "id", "text", "created_at", "lang", "possibly_sensitive", "source",
+    "like_count", "retweet_count", "reply_count", "quote_count",
+    "hashtags", "categories", "country", "country_source",
+    "author_id", "author_username", "author_name", "author_description",
+    "author_location", "author_verified", "author_protected",
+    "author_followers", "author_following", "author_tweet_count", "author_listed_count",
+    "author_created_at",
+    "sentiment_label", "sentiment_score",
+    "emotion", "vad_valence", "vad_arousal", "vad_dominance", "vad_source",
+]
+
+
+def _tweet_analysis_to_csv_row(p: dict, nlp: dict) -> list:
+    m = p.get("metrics") or {}
+    author = p.get("author") or {}
+    author_m = author.get("metrics") or {}
+    country = p.get("country") or {}
+    sentiment = (nlp.get("sentiments") or {}).get(p.get("id")) or {}
+    vad = (nlp.get("vad") or {}).get(p.get("id")) or {}
+    return [
+        p.get("id"), p.get("text"), p.get("created_at"), p.get("lang"),
+        p.get("possibly_sensitive"), p.get("source"),
+        m.get("like_count"), m.get("retweet_count"), m.get("reply_count"), m.get("quote_count"),
+        " ".join(p.get("hashtags") or []), "; ".join(p.get("categories") or []),
+        country.get("name"), country.get("source"),
+        author.get("id"), author.get("username"), author.get("name"), author.get("description"),
+        author.get("location"), author.get("verified"), author.get("protected"),
+        author_m.get("followers_count"), author_m.get("following_count"),
+        author_m.get("tweet_count"), author_m.get("listed_count"), author.get("created_at"),
+        sentiment.get("label"), sentiment.get("score"),
+        p.get("emotion"), vad.get("valence"), vad.get("arousal"), vad.get("dominance"), vad.get("source"),
+    ]
+
+
+@app.route("/export/analysis.csv", methods=["GET"])
+def export_analysis_csv():
+    mode, query, max_results, lang, country = parse_search_params(request.args)
+    if not query:
+        return Response("Falta el parámetro 'query'.", status=400)
+    result = run_search(mode, query, max_results, lang, country)
+    _add_analysis(result)
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    if result.get("mode") == "tweets":
+        writer.writerow(TWEET_ANALYSIS_CSV_COLUMNS)
+        nlp = result.get("nlp") or {}
+        for p in result.get("posts") or []:
+            writer.writerow(_tweet_analysis_to_csv_row(p, nlp))
+    else:
+        writer.writerow(USER_CSV_COLUMNS)
+        for u in result.get("users") or []:
+            writer.writerow(_user_to_csv_row(u))
+
+    return Response(
+        "﻿" + buffer.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment; filename=twitter-search-analysis.csv"},
+    )
+
+
 @app.route("/login", methods=["GET"])
 def login():
     if not app.secret_key:

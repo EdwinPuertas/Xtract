@@ -70,9 +70,17 @@ Callback URI registrado en X).
   Un post con varios hashtags/categorías aparece en cada grupo correspondiente.
 - El resumen de KPIs también incluye los hashtags, categorías y países más frecuentes de la
   búsqueda.
-- Cada búsqueda se puede exportar como **JSON**, **NDJSON** (un objeto por línea) o **CSV**
-  (con columnas planas, incluyendo hashtags/categorías/país) desde los enlaces sobre los
-  resultados.
+- **Exportar, en dos archivos separados** (JSON, NDJSON o CSV cada uno) desde los enlaces
+  sobre los resultados:
+  - **Datos en bruto de la consulta** (`/export.json`, `/export.ndjson`, `/export.csv`): lo
+    que devuelve la búsqueda tal cual — posts o usuarios con sus métricas, hashtags,
+    categorías y país, y el resumen de KPIs (en JSON). Sin análisis de texto.
+  - **Perfil + texto + análisis** (`/export/analysis.json`, `/export/analysis.ndjson`,
+    `/export/analysis.csv`; solo búsqueda de posts): cada post con el perfil completo de su
+    autor (bio, ubicación, verificado, seguidores, etc.), su texto, y el resultado del
+    análisis — sentimiento, emoción VAD (con valencia/activación/dominancia) y, en JSON, los
+    agregados de tópicos/bigramas/trigramas de toda la búsqueda. En CSV cada fila es un post
+    con todas esas columnas aplanadas.
 - **Conectar cuenta de X**: botón en la parte superior → autoriza en X → vuelves a Xtract
   con tu perfil y un cuadro para publicar tweets.
 - **Timeline de usuario**: haz clic en cualquier autor (en resultados de posts o de usuarios)
@@ -337,8 +345,10 @@ ciclan ni se reasignan por rango.
 
 - Las credenciales se leen de `.env` (local) o de las variables de entorno del hosting
   (producción). `.env` está en `.gitignore` — nunca lo subas a un repositorio.
-- Exportar JSON/NDJSON vuelve a ejecutar la búsqueda en el momento de la descarga (no hay
-  caché de resultados), para que funcione igual en local y en despliegues serverless.
+- Cualquier exportación (bruta o con análisis) vuelve a ejecutar la búsqueda en el momento
+  de la descarga (no hay caché de resultados), para que funcione igual en local y en
+  despliegues serverless. La exportación "con análisis" además vuelve a correr spaCy/NLTK
+  sobre los posts, así que tarda más que la bruta.
 - El login OAuth guarda el access/refresh token en la cookie de sesión de Flask (firmada,
   no cifrada). Es apropiado para uso personal/single-user como este; no lo uses tal cual
   para una app multiusuario sin cifrar el contenido de la sesión.
