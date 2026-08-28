@@ -164,6 +164,11 @@ button:active { transform: scale(0.98); }
   margin-bottom: 1rem;
 }
 
+.export-links {
+  font-size: 0.9rem;
+  color: var(--muted);
+  margin-bottom: 0.5rem;
+}
 .export-links a {
   color: var(--accent);
   text-decoration: none;

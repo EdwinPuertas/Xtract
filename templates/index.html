@@ -84,13 +84,21 @@
       <section class="results">
         <div class="results-header">
           <h2>Resultados ({{ result.count }})</h2>
-          <div class="export-links">
-            Exportar:
-            <a href="{{ url_for('export_json', mode=form.mode, query=form.query, max_results=form.max_results, lang=form.lang, country=form.country) }}">JSON</a>
-            <a href="{{ url_for('export_ndjson', mode=form.mode, query=form.query, max_results=form.max_results, lang=form.lang, country=form.country) }}">NDJSON</a>
-            <a href="{{ url_for('export_csv', mode=form.mode, query=form.query, max_results=form.max_results, lang=form.lang, country=form.country) }}">CSV</a>
-          </div>
         </div>
+        <div class="export-links">
+          Exportar datos en bruto de la consulta:
+          <a href="{{ url_for('export_json', mode=form.mode, query=form.query, max_results=form.max_results, lang=form.lang, country=form.country) }}">JSON</a>
+          <a href="{{ url_for('export_ndjson', mode=form.mode, query=form.query, max_results=form.max_results, lang=form.lang, country=form.country) }}">NDJSON</a>
+          <a href="{{ url_for('export_csv', mode=form.mode, query=form.query, max_results=form.max_results, lang=form.lang, country=form.country) }}">CSV</a>
+        </div>
+        {% if result.mode == 'tweets' %}
+        <div class="export-links">
+          Exportar perfil + texto + análisis (sentimiento, emociones, tópicos):
+          <a href="{{ url_for('export_analysis_json', mode=form.mode, query=form.query, max_results=form.max_results, lang=form.lang, country=form.country) }}">JSON</a>
+          <a href="{{ url_for('export_analysis_ndjson', mode=form.mode, query=form.query, max_results=form.max_results, lang=form.lang, country=form.country) }}">NDJSON</a>
+          <a href="{{ url_for('export_analysis_csv', mode=form.mode, query=form.query, max_results=form.max_results, lang=form.lang, country=form.country) }}">CSV</a>
+        </div>
+        {% endif %}
 
         {% if result.mode == 'tweets' %}
           {% if result.kpis and result.kpis.total_posts > 0 %}
