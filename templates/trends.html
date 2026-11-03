@@ -78,6 +78,13 @@
               Trigramas: {% for gram, n in run.nlp.top_trigrams %}<span class="pill">{{ gram }}: {{ n }}</span>{% endfor %}
             </div>
           {% endif %}
+          {% if run.nlp.top_entities_by_type %}
+            {% for label, items in run.nlp.top_entities_by_type.items() %}
+              <div class="kpi-sub">
+                {{ entity_labels.get(label, label) }}: {% for ent, n in items %}<span class="pill">{{ ent }}: {{ n }}</span>{% endfor %}
+              </div>
+            {% endfor %}
+          {% endif %}
           {% if run.kpis.top_countries %}
             <div class="kpi-sub">
               Países: {% for country, n in run.kpis.top_countries %}<span class="pill">🌎 {{ country }}: {{ n }}</span>{% endfor %}

@@ -164,6 +164,29 @@ button:active { transform: scale(0.98); }
   margin-bottom: 1rem;
 }
 
+.warning {
+  background: color-mix(in srgb, #eda100 18%, var(--card));
+  color: var(--fg);
+  border: 1px solid #eda100;
+  padding: 0.7rem 1rem;
+  border-radius: 10px;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+}
+
+.query-help {
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+.query-help summary { cursor: pointer; }
+.query-help ul { margin: 0.5rem 0 0; padding-left: 1.1rem; }
+.query-help code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 0.3rem;
+}
+
 .export-links {
   font-size: 0.9rem;
   color: var(--muted);

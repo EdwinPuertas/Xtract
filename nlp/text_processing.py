@@ -165,3 +165,22 @@ class TextProcessing(object):
         except Exception as e:
             print("Error noun_phrases: {0}".format(e))
         return result
+
+    def entities(self, text: str):
+        """Entidades nombradas (NER) del texto original (sin pasar por
+        transformer/lowercase: spaCy necesita las mayúsculas para reconocer
+        nombres propios). Las etiquetas vienen del esquema del modelo spaCy
+        cargado (es_core_news_sm usa PER/LOC/ORG/MISC; en_core_web_sm usa un
+        esquema más fino como PERSON/GPE/ORG/DATE)."""
+        result = []
+        try:
+            doc = self.analysis_pipe(text=text)
+            if doc is not None:
+                result = [
+                    {"text": ent.text.strip(), "label": ent.label_}
+                    for ent in doc.ents
+                    if len(ent.text.strip()) > 1
+                ]
+        except Exception as e:
+            print("Error entities: {0}".format(e))
+        return result

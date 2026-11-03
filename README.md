@@ -61,7 +61,14 @@ Callback URI registrado en X).
 ## Uso
 
 - **Buscar posts**: usa la sintaxis de búsqueda de X, p. ej. `from:nasa`, `#IA lang:es`,
-  `"inteligencia artificial" -is:retweet`.
+  `"inteligencia artificial" -is:retweet`, `(gato OR perro) -is:retweet`. El formulario
+  incluye una ayuda con ejemplos de operadores, y el servidor valida la sintaxis antes de
+  enviarla a X: paréntesis/comillas sin cerrar o una búsqueda vacía de contenido positivo
+  bloquean el envío con un mensaje claro; usar `OR` sin agrupar con paréntesis muestra una
+  advertencia (la búsqueda se intenta igual, por si es un falso positivo).
+- **Búsqueda semántica** (solo búsqueda de posts, si configuraste `VOYAGE_API_KEY`): los
+  resultados se reordenan por similitud semántica con lo que escribiste, no solo por
+  coincidencia de palabras — ver [Búsqueda semántica y fusión léxico+embeddings](#búsqueda-semántica-y-fusión-léxicoembeddings-voyage-ai).
 - **Buscar usuarios**: escribe uno o varios `@usuario` separados por comas, p. ej. `nasa, spacex`.
 - **Agrupar por** (solo búsqueda de posts): agrupa los resultados en pantalla por hashtag,
   por categoría (usa `context_annotations` de la API de X, clasificación temática nativa de
@@ -87,10 +94,13 @@ Callback URI registrado en X).
   para ver sus últimos posts, KPIs y exportar esa vista.
 - **Análisis de texto automático** (solo búsqueda de posts, siempre activo): cada búsqueda de
   posts corre un análisis lingüístico con spaCy/NLTK — sintagmas nominales (tópicos
-  frecuentes), bigramas/trigramas, sentimiento por post (positivo/neutral/negativo, basado en
+  frecuentes), bigramas/trigramas, **entidades nombradas (NER)** agrupadas por tipo (personas,
+  organizaciones, lugares, etc.), sentimiento por post (positivo/neutral/negativo, basado en
   un léxico de adjetivos en español/inglés) y **emociones por post según el modelo VAD**
-  (valencia, activación, dominancia) usando el NRC VAD Lexicon v2. Esto añade latencia a cada
-  búsqueda de posts a cambio de tener siempre tópicos/sentimiento/emociones disponibles (y
+  (valencia, activación, dominancia) usando el NRC VAD Lexicon. Si configuraste
+  `VOYAGE_API_KEY`, sentimiento/emociones/tópicos además se fusionan con embeddings
+  semánticos — ver la sección dedicada más abajo. Esto añade latencia a cada búsqueda de
+  posts a cambio de tener siempre tópicos/entidades/sentimiento/emociones disponibles (y
   poder agrupar por ellos).
 - **Idioma** (solo búsqueda de posts): filtra por idioma con el operador `lang:` de la API
   de X. Por defecto es **español (`es`)**; puedes cambiarlo o dejarlo en "Cualquiera".
@@ -102,6 +112,71 @@ Callback URI registrado en X).
 - **País detectado por post**: cada post muestra un país inferido — a partir de su
   geoetiquetado si lo tiene, o si no, de un análisis heurístico del campo de ubicación libre
   del perfil del autor (`nlp/geo.py`). Es una aproximación, no un dato verificado por X.
+
+## Búsqueda semántica y fusión léxico+embeddings (Voyage AI)
+
+### Qué modelo se eligió, y por qué
+
+Para mejorar el campo de búsqueda (operadores lógicos + semántica) y la detección de
+sentimiento/NER/tópicos, se evaluaron tres enfoques:
+
+1. **NER vía LLM generativo** (Claude/GPT/Gemini por post) — descartado: spaCy ya trae NER
+   entrenado (`es_core_news_sm`/`en_core_web_sm`, ya eran dependencias del proyecto). Llamar
+   a un LLM por post sería más lento y más caro, sin ganancia real para un lote de hasta
+   1000 posts/día. **`nlp/text_processing.py` usa el NER de spaCy, sin dependencias nuevas.**
+2. **Modelos de embeddings** (para fusión léxico+semántica y re-ranking) — no hay opción
+   viable de *self-host* en Vercel serverless (sin GPU, sin disco persistente, límites de
+   tamaño/tiempo de función). Se eligió **Voyage AI** (`voyage-multilingual-2`), el socio de
+   embeddings recomendado por Anthropic, con buen soporte multilingüe incluido español.
+   Alternativa equivalente: OpenAI `text-embedding-3`.
+3. **Sentimiento/NER/tópicos vía LLM generativo puro** (reemplazar todo el pipeline por un
+   prompt a Claude/GPT/Gemini) — descartado para producción en lote: ningún LLM generativo
+   hace embeddings nativamente, y la comparación encontrada entre Claude/GPT/Gemini para
+   extracción estructurada multilingüe viene de blogs de baja confiabilidad, sin benchmark
+   real para esta tarea — llamar a un LLM por tweet además sería mucho más lento/caro que
+   embeddings + léxico fusionados para un job de 1000 posts/día.
+
+**Conclusión**: NER se resolvió con spaCy (gratis, ya instalado); la fusión léxico+semántica
+y la búsqueda semántica usan una API de embeddings (Voyage AI) en vez de un LLM generativo.
+
+### Qué se activa con `VOYAGE_API_KEY`
+
+Inactivo por defecto — sin esta variable, la app funciona exactamente igual que antes (nada
+se activa, ningún texto sale a un tercero, cero costo). Al definirla (`nlp/embeddings.py`,
+cliente REST directo con `requests`, sin SDK nuevo) se activan tres cosas:
+
+1. **Re-ranking semántico del campo de búsqueda principal** (`rerank_posts_by_relevance` en
+   `app.py`, tras cada búsqueda de posts): se embebe tu consulta (sin los operadores
+   `lang:`/`place_country:` que agrega la app) y el texto de cada post, y los resultados se
+   reordenan por similitud de coseno — cada post muestra su `semantic_score` (🎯). No cambia
+   qué devuelve la API de X (sigue siendo búsqueda por palabra clave/operadores), solo el
+   orden en que se muestran los resultados.
+2. **Fusión léxico+embeddings para sentimiento y emociones VAD** (`nlp/semantic_fusion.py`,
+   `fuse_sentiment`/`fuse_emotion`): compara el embedding de cada post contra prototipos
+   (promedio de embeddings de frases de ejemplo en ES/EN) por clase. Reglas explicables, no
+   un clasificador entrenado:
+   - Si el léxico no encontró ninguna palabra conocida (p. ej. una emoción VAD en español,
+     ya que el NRC VAD Lexicon instalado es solo-inglés), se usa la etiqueta semántica.
+   - Si léxico y embeddings coinciden, se mantiene esa etiqueta (`fusion_acuerdo`).
+   - Si no coinciden, gana la fuente con más señal (el léxico si encontró varias palabras
+     relevantes, los embeddings si encontró muy pocas).
+   Cada resultado incluye `fusion_source` para saber qué fuente ganó, y `semantic_label`/
+   `semantic_emotion` con lo que dijeron los embeddings por separado.
+3. **Fusión de tópicos/bigramas/trigramas semánticamente equivalentes**
+   (`merge_similar_phrases`): frases léxicamente distintas pero semánticamente iguales (ej.
+   "el presidente" y "el mandatario") se fusionan sumando sus conteos, en vez de competir
+   como tópicos separados solo por no compartir las mismas palabras. `topics_source` indica
+   si se pudo aplicar (`lexico_fusionado_embeddings`) o no (`lexico_solo`).
+
+### Configuración, costo y privacidad
+
+- `VOYAGE_API_KEY` (crea una cuenta en https://www.voyageai.com/) y opcionalmente
+  `VOYAGE_EMBEDDING_MODEL` (por defecto `voyage-multilingual-2`).
+- Esto envía el texto de los posts (y tu consulta) a Voyage AI, y tiene costo por token —
+  tenlo en cuenta si tu proyecto maneja datos sensibles o un volumen alto (recuerda que el
+  job de tendencias puede analizar hasta `TRENDS_ANALYZE_MAX_POSTS` posts por corrida).
+- Si la API de Voyage falla o no responde (red, cuota, etc.), todo se degrada automáticamente
+  al comportamiento puramente léxico — nunca rompe una búsqueda ni el job de tendencias.
 
 ## Vista de tendencias (`/trends`)
 
@@ -202,6 +277,12 @@ para español (`es`) e inglés (`en`):
   `is_alpha`/`is_stop`.
 - **`noun_phrases`**: extrae los sintagmas nominales (`doc.noun_chunks`) del texto, útil
   para detectar los "temas" o tópicos mencionados en un post.
+- **`entities`**: entidades nombradas (NER) del texto **original** (sin pasar por
+  `transformer`/minúsculas: spaCy necesita las mayúsculas para reconocer nombres propios),
+  vía `doc.ents`. Las etiquetas vienen del esquema del modelo cargado (`es_core_news_sm` usa
+  `PER`/`LOC`/`ORG`/`MISC`; `en_core_web_sm` usa un esquema más fino como
+  `PERSON`/`GPE`/`ORG`/`DATE`) — `app.py` las traduce al español vía `ENTITY_LABELS` para
+  mostrarlas.
 
 ### `nlp/lexical_features.py` — diccionarios `lexical_es` / `lexical_en`
 
@@ -233,18 +314,40 @@ Orquesta el análisis de un lote de posts y es el punto de entrada que consume `
   `positivo` (> 0.15), `negativo` (< -0.15) o `neutral` en el resto de los casos.
 - **`analyze_posts(posts, max_posts=60)`**: función principal.
   1. Limita el análisis a los primeros `max_posts` posts (por costo de cómputo).
-  2. Para cada post: detecta idioma (`es`/`en`, default `es`), limpia el texto
-     (`TextProcessing.transformer`), lo tokeniza y extrae bigramas, trigramas y sintagmas
-     nominales, acumulando frecuencias globales con `collections.Counter`.
-  3. Calcula el sentimiento y las emociones VAD de cada post individualmente.
-  4. Devuelve un diccionario con: `analyzed_count`, los 15 bigramas/trigramas/sintagmas
-     nominales más frecuentes (`top_bigrams`, `top_trigrams`, `top_noun_phrases`), el detalle
-     de sentimiento por post indexado por `id` (`sentiments`), un resumen de conteos por
-     etiqueta (`sentiment_summary`), el detalle de emociones VAD por post (`vad`) y un
-     resumen (`vad_summary`) con el conteo por emoción y la fuente del léxico usado.
+  2. Si `VOYAGE_API_KEY` está configurada, embebe el texto de **todos** los posts en un
+     único batch (`nlp/embeddings.py`) — una sola llamada por búsqueda, no una por post ni
+     una por tipo de análisis, para no multiplicar costo/latencia.
+  3. Para cada post: detecta idioma (`es`/`en`, default `es`), limpia el texto
+     (`TextProcessing.transformer`), lo tokeniza y extrae bigramas, trigramas, sintagmas
+     nominales y entidades nombradas, acumulando frecuencias globales con
+     `collections.Counter` (o `Counter` por tipo de entidad).
+  4. Calcula el sentimiento léxico y las emociones VAD léxicas de cada post, y los fusiona
+     con el embedding del post ya calculado (`nlp/semantic_fusion.fuse_sentiment`/
+     `fuse_emotion` — no-op si no hay embeddings disponibles).
+  5. Fusiona bigramas/trigramas/sintagmas nominales semánticamente equivalentes
+     (`nlp/semantic_fusion.merge_similar_phrases`, también no-op sin embeddings) antes de
+     tomar los 15 más frecuentes de cada uno.
+  6. Devuelve un diccionario con: `analyzed_count`, `embeddings_used` (si se pudo usar
+     Voyage AI), los 15 bigramas/trigramas/sintagmas nominales más frecuentes
+     (`top_bigrams`/`top_trigrams`/`top_noun_phrases`, cada uno con su `..._source`:
+     `lexico_fusionado_embeddings` o `lexico_solo`), las entidades nombradas agrupadas por
+     tipo (`top_entities_by_type`), el detalle de sentimiento por post indexado por `id`
+     (`sentiments`, con `fusion_source`/`semantic_label` si hubo fusión), un resumen de
+     conteos por etiqueta (`sentiment_summary`), el detalle de emociones VAD por post (`vad`,
+     igual con `fusion_source`/`semantic_emotion`) y un resumen (`vad_summary`) con el conteo
+     por emoción y la fuente del léxico usado.
 
 Este resultado (`result["nlp"]`) es lo que consume `templates/index.html` para pintar los
-tópicos frecuentes, n-gramas, sentimiento y emociones junto a los resultados de la búsqueda.
+tópicos frecuentes, n-gramas, entidades, sentimiento y emociones junto a los resultados de
+la búsqueda.
+
+### `nlp/embeddings.py` y `nlp/semantic_fusion.py`
+
+Documentados en detalle en [Búsqueda semántica y fusión léxico+embeddings](#búsqueda-semántica-y-fusión-léxicoembeddings-voyage-ai)
+más arriba: `embeddings.py` es el cliente REST de Voyage AI (`embed_texts`,
+`cosine_similarity`, `rerank_posts_by_relevance`, todo gateado por `VOYAGE_API_KEY`);
+`semantic_fusion.py` son las reglas de fusión léxico+semántica (`fuse_sentiment`,
+`fuse_emotion`, `merge_similar_phrases`) que usa `analyze_posts`.
 
 ### `nlp/vad_lexicon.py` — carga del NRC VAD Lexicon
 
