@@ -15,10 +15,10 @@
       {% endif %}
       {% if sentiments and sentiments.get(p.id) %}
         {% set s = sentiments.get(p.id) %}
-        <span class="pill sentiment-{{ 'pos' if s.label == 'positivo' else ('neg' if s.label == 'negativo' else 'neu') }}-pill">{{ s.label }}</span>
+        <span class="pill sentiment-{{ 'pos' if s.label == 'positivo' else ('neg' if s.label == 'negativo' else 'neu') }}-pill" title="{{ s.fusion_source or 'lexico' }}">{{ s.label }}</span>
       {% endif %}
       {% if vad and vad.get(p.id) and vad.get(p.id).emotion != 'sin_datos' %}
-        <span class="pill" title="modelo VAD">{{ vad.get(p.id).emotion }}</span>
+        <span class="pill" title="{{ vad.get(p.id).fusion_source or 'nrc_vad' }}">{{ vad.get(p.id).emotion }}</span>
       {% endif %}
     </div>
     <p class="tweet-text">{{ p.text }}</p>
@@ -30,6 +30,7 @@
       <span>🔗 {{ p.metrics.quote_count }}</span>
       <span>lang: {{ p.lang }}</span>
       {% if p.country %}<span title="{{ p.country.source }}">🌎 {{ p.country.name }}</span>{% endif %}
+      {% if p.semantic_score is defined and p.semantic_score is not none %}<span title="similitud semántica con tu búsqueda (Voyage AI)">🎯 {{ p.semantic_score }}</span>{% endif %}
     </div>
     {% if p.hashtags %}
       <div class="meta">{% for tag in p.hashtags %}<span class="pill">{{ tag }}</span>{% endfor %}</div>

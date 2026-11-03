@@ -87,9 +87,12 @@ def _summarize_nlp(nlp: dict) -> dict:
     post no aporta a la serie de tiempo y hace crecer mucho cada fila)."""
     return {
         "analyzed_count": nlp.get("analyzed_count"),
+        "embeddings_used": nlp.get("embeddings_used"),
         "top_bigrams": nlp.get("top_bigrams"),
         "top_trigrams": nlp.get("top_trigrams"),
         "top_noun_phrases": nlp.get("top_noun_phrases"),
+        "topics_source": nlp.get("topics_source"),
+        "top_entities_by_type": nlp.get("top_entities_by_type"),
         "sentiment_summary": nlp.get("sentiment_summary"),
         "vad_summary": nlp.get("vad_summary"),
     }

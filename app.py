@@ -2,6 +2,7 @@ import csv
 import io
 import json
 import os
+import re
 import time
 from datetime import datetime, timezone
 
@@ -12,6 +13,7 @@ from flask import Flask, Response, redirect, render_template, request, session, 
 
 import charts
 import xauth
+from nlp.embeddings import rerank_posts_by_relevance
 from nlp.geo import COUNTRIES, detect_country
 
 load_dotenv()
@@ -374,6 +376,25 @@ GROUP_BY_LABELS = {
     "emotion": "Emoción (VAD)",
 }
 
+# Traducción de las etiquetas NER más comunes (es_core_news_sm y en_core_web_sm
+# no comparten el mismo esquema; lo que no está aquí se muestra con su
+# etiqueta original de spaCy).
+ENTITY_LABELS = {
+    "PER": "Personas", "PERSON": "Personas",
+    "ORG": "Organizaciones",
+    "LOC": "Lugares", "GPE": "Lugares",
+    "MISC": "Otros",
+    "NORP": "Nacionalidades/grupos",
+    "DATE": "Fechas", "TIME": "Horas",
+    "EVENT": "Eventos",
+    "PRODUCT": "Productos",
+    "FAC": "Instalaciones",
+    "LAW": "Leyes",
+    "LANGUAGE": "Idiomas",
+    "MONEY": "Dinero", "PERCENT": "Porcentajes", "QUANTITY": "Cantidades", "CARDINAL": "Números", "ORDINAL": "Ordinales",
+    "WORK_OF_ART": "Obras",
+}
+
 
 def parse_search_params(args) -> tuple[str, str, int, str, str]:
     mode = args.get("mode", "tweets")
@@ -411,6 +432,78 @@ def run_search(mode: str, query: str, max_results: int, lang: str = "", country:
     if mode == "users":
         return search_users(query, max_results)
     return search_tweets(_augment_query(query, lang, country), max_results)
+
+
+_QUOTED_RE = re.compile(r'"[^"]*"')
+_OR_RE = re.compile(r"(?<![\w-])or(?![\w-])", re.IGNORECASE)
+# Operadores que son solo "filtros" (no sirven como criterio de búsqueda por sí
+# solos); from:/to:/url:/#tag/@mención sí son criterios válidos por sí mismos,
+# por eso se excluyen a propósito de esta lista.
+_MODIFIER_ONLY_RE = re.compile(
+    r"-?\b(?:lang|place_country|is|has|conversation_id|context|entity|retweets_of|bio_name|bio_location):\S+",
+    re.IGNORECASE,
+)
+_NEGATED_WORD_RE = re.compile(r"(?<!\S)-\S+")
+
+
+def validate_query(query: str) -> tuple[list[str], list[str]]:
+    """Valida la sintaxis de operadores de la API de X antes de enviar la
+    búsqueda, para convertir errores comunes en un mensaje claro en vez de un
+    rechazo críptico de la API. Devuelve (errores, advertencias): los errores
+    bloquean el envío (sintaxis rota, imposible de interpretar); las
+    advertencias se muestran pero la búsqueda se intenta igual (heurísticas,
+    pueden tener falsos positivos)."""
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if len(query) > 512:
+        errors.append(
+            f"La búsqueda tiene {len(query)} caracteres; la API de X permite máximo 512 "
+            "en la mayoría de los niveles de acceso. Acórtala."
+        )
+
+    if query.count('"') % 2 != 0:
+        errors.append('Hay una comilla doble (") sin cerrar. Revisa las frases exactas entre comillas.')
+
+    depth = 0
+    for ch in query:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth < 0:
+                errors.append("Hay un paréntesis de cierre ')' sin su paréntesis de apertura correspondiente.")
+                break
+    else:
+        if depth > 0:
+            errors.append("Hay un paréntesis de apertura '(' sin cerrar.")
+
+    without_quotes = _QUOTED_RE.sub(" ", query)
+    if _OR_RE.search(without_quotes) and "(" not in query:
+        warnings.append(
+            'Usaste "OR" sin paréntesis. La API de X requiere agrupar los términos unidos por OR, '
+            "ej.: (gato OR perro) lang:es — si no, puede rechazar la búsqueda o interpretarla distinto a lo esperado."
+        )
+
+    stripped = _MODIFIER_ONLY_RE.sub(" ", query)
+    stripped = _NEGATED_WORD_RE.sub(" ", stripped)
+    stripped = stripped.replace('"', " ")  # las comillas de una frase exacta cuentan como contenido, no como operador
+    if not stripped.strip():
+        warnings.append(
+            "La búsqueda parece tener solo operadores y negaciones, sin ninguna palabra clave positiva. "
+            "La API de X requiere al menos un término, hashtag o frase que no esté negado."
+        )
+
+    return errors, warnings
+
+
+def _validate_export_query(mode: str, query: str) -> Response | None:
+    if mode != "tweets":
+        return None
+    errors, _ = validate_query(query)
+    if errors:
+        return Response(" ".join(errors), status=400)
+    return None
 
 
 _GROUP_BY_FIELDS = {
@@ -459,6 +552,7 @@ def inject_search_filters():
         "countries": COUNTRIES,
         "default_lang": DEFAULT_LANG,
         "group_by_labels": GROUP_BY_LABELS,
+        "entity_labels": ENTITY_LABELS,
     }
 
 
@@ -585,6 +679,12 @@ def search():
     if not query:
         return render_template("index.html", result=None, error="Escribe una búsqueda.", form=form)
 
+    query_warnings = []
+    if mode == "tweets":
+        query_errors, query_warnings = validate_query(query)
+        if query_errors:
+            return render_template("index.html", result=None, error=" ".join(query_errors), form=form)
+
     try:
         result = run_search(mode, query, max_results, lang, country)
     except tweepy.errors.Unauthorized:
@@ -621,6 +721,9 @@ def search():
     except RuntimeError as exc:
         return render_template("index.html", result=None, error=str(exc), form=form)
 
+    if result.get("mode") == "tweets":
+        result["semantic_rerank_applied"] = rerank_posts_by_relevance(query, result["posts"])
+
     nlp_error = None
     if result.get("mode") == "tweets":
         if NLP_AVAILABLE:
@@ -635,7 +738,7 @@ def search():
     if result.get("mode") == "tweets" and group_by != "none":
         result["grouped"] = group_posts(result["posts"], group_by)
 
-    return render_template("index.html", result=result, error=nlp_error, form=form)
+    return render_template("index.html", result=result, error=nlp_error, form=form, query_warnings=query_warnings)
 
 
 @app.route("/export.json", methods=["GET"])
@@ -643,6 +746,9 @@ def export_json():
     mode, query, max_results, lang, country = parse_search_params(request.args)
     if not query:
         return Response("Falta el parámetro 'query'.", status=400)
+    invalid = _validate_export_query(mode, query)
+    if invalid:
+        return invalid
     result = run_search(mode, query, max_results, lang, country)
     payload = json.dumps(result, ensure_ascii=False, indent=2)
     return Response(
@@ -657,6 +763,9 @@ def export_ndjson():
     mode, query, max_results, lang, country = parse_search_params(request.args)
     if not query:
         return Response("Falta el parámetro 'query'.", status=400)
+    invalid = _validate_export_query(mode, query)
+    if invalid:
+        return invalid
     result = run_search(mode, query, max_results, lang, country)
 
     items = result.get("posts") if result.get("mode") == "tweets" else result.get("users")
@@ -708,6 +817,9 @@ def export_csv():
     mode, query, max_results, lang, country = parse_search_params(request.args)
     if not query:
         return Response("Falta el parámetro 'query'.", status=400)
+    invalid = _validate_export_query(mode, query)
+    if invalid:
+        return invalid
     result = run_search(mode, query, max_results, lang, country)
 
     buffer = io.StringIO()
@@ -751,6 +863,9 @@ def export_analysis_json():
     mode, query, max_results, lang, country = parse_search_params(request.args)
     if not query:
         return Response("Falta el parámetro 'query'.", status=400)
+    invalid = _validate_export_query(mode, query)
+    if invalid:
+        return invalid
     result = run_search(mode, query, max_results, lang, country)
     nlp_error = _add_analysis(result)
     if nlp_error:
@@ -768,6 +883,9 @@ def export_analysis_ndjson():
     mode, query, max_results, lang, country = parse_search_params(request.args)
     if not query:
         return Response("Falta el parámetro 'query'.", status=400)
+    invalid = _validate_export_query(mode, query)
+    if invalid:
+        return invalid
     result = run_search(mode, query, max_results, lang, country)
     _add_analysis(result)
 
@@ -821,6 +939,9 @@ def export_analysis_csv():
     mode, query, max_results, lang, country = parse_search_params(request.args)
     if not query:
         return Response("Falta el parámetro 'query'.", status=400)
+    invalid = _validate_export_query(mode, query)
+    if invalid:
+        return invalid
     result = run_search(mode, query, max_results, lang, country)
     _add_analysis(result)
 

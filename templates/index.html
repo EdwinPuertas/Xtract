@@ -37,10 +37,21 @@
       <input
         type="text"
         name="query"
-        placeholder="Ej: from:nasa OR #IA   (o para usuarios: nasa, spacex)"
+        placeholder="Ej: (gato OR perro) -is:retweet   (o para usuarios: nasa, spacex)"
         value="{{ form.get('query', '') }}"
         required
       >
+      <details class="query-help">
+        <summary>Ejemplos de operadores lógicos</summary>
+        <ul>
+          <li><code>gato perro</code> — ambos términos (Y, espacio = AND implícito)</li>
+          <li><code>(gato OR perro)</code> — cualquiera de los dos (O — agrupa siempre con paréntesis)</li>
+          <li><code>gato -perro</code> — con "gato" y sin "perro" (negación)</li>
+          <li><code>"inteligencia artificial"</code> — frase exacta</li>
+          <li><code>from:nasa</code> / <code>to:nasa</code> / <code>#IA</code> / <code>@nasa</code> — autor, respuesta a, hashtag, mención</li>
+          <li><code>-is:retweet</code> / <code>-is:reply</code> — sin retweets / sin respuestas</li>
+        </ul>
+      </details>
 
       <div class="field-row">
         <label for="max_results">Máx. resultados (10-100)</label>
@@ -80,11 +91,22 @@
       <div class="error">{{ error }}</div>
     {% endif %}
 
+    {% if query_warnings %}
+      <div class="warning">
+        {% for w in query_warnings %}<div>⚠ {{ w }}</div>{% endfor %}
+      </div>
+    {% endif %}
+
     {% if result %}
       <section class="results">
         <div class="results-header">
           <h2>Resultados ({{ result.count }})</h2>
         </div>
+        {% if result.semantic_rerank_applied %}
+          <p class="muted" style="font-size:0.82rem; margin: -0.3rem 0 0.6rem;">
+            🎯 Ordenado por relevancia semántica con tu búsqueda (Voyage AI).
+          </p>
+        {% endif %}
         <div class="export-links">
           Exportar datos en bruto de la consulta:
           <a href="{{ url_for('export_json', mode=form.mode, query=form.query, max_results=form.max_results, lang=form.lang, country=form.country) }}">JSON</a>
@@ -149,6 +171,12 @@
             {% set nlp = result.nlp %}
             <div class="nlp-section">
               <h3>Análisis de texto ({{ nlp.analyzed_count }} posts analizados)</h3>
+              {% if nlp.embeddings_used %}
+                <p class="muted" style="font-size:0.8rem;">
+                  Sentimiento, emociones y tópicos combinan el léxico propio con embeddings
+                  semánticos (Voyage AI) — ver el campo <code>fusion_source</code> por post.
+                </p>
+              {% endif %}
 
               {% if nlp.sentiment_summary %}
                 {% set total_sent = (nlp.sentiment_summary.positivo or 0) + (nlp.sentiment_summary.neutral or 0) + (nlp.sentiment_summary.negativo or 0) %}
@@ -185,6 +213,17 @@
                 <strong class="muted">Sintagmas nominales (tópicos frecuentes)</strong>
                 <div class="kpi-sub">
                   {% for phrase, n in nlp.top_noun_phrases %}<span class="pill">{{ phrase }}: {{ n }}</span>{% endfor %}
+                </div>
+              {% endif %}
+
+              {% if nlp.top_entities_by_type %}
+                <strong class="muted">Entidades nombradas (NER)</strong>
+                <div class="kpi-sub">
+                  {% for label, items in nlp.top_entities_by_type.items() %}
+                    <div><em>{{ entity_labels.get(label, label) }}:</em>
+                      {% for ent, n in items %}<span class="pill">{{ ent }}: {{ n }}</span>{% endfor %}
+                    </div>
+                  {% endfor %}
                 </div>
               {% endif %}
 
